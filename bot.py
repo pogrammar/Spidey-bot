@@ -37,6 +37,7 @@ EXTENSIONS = [
     "cogs.admin_cog",
     "cogs.status_cog",
     "cogs.heartbeat_cog",
+    "cogs.health_cog",
 ]
 
 
