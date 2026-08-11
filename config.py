@@ -13,3 +13,7 @@ _owner_id = os.environ.get("OWNER_DISCORD_ID", "").strip()
 OWNER_DISCORD_ID = int(_owner_id) if _owner_id else None
 
 DB_URL = os.environ.get("SPIDEY_DB_URL", "sqlite+aiosqlite:///./spidey.db")
+
+# Optional: an UptimeRobot Heartbeat monitor's push URL. Left unset, the heartbeat
+# cog just doesn't start — no error, no behavior change.
+UPTIME_ROBOT_PUSH_URL = os.environ.get("UPTIME_ROBOT_PUSH_URL", "").strip() or None
