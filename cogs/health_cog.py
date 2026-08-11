@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import discord
@@ -25,7 +26,12 @@ class HealthCog(commands.Cog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
         self.runner: web.AppRunner | None = None
-        bot.loop.create_task(self._start_server())
+        # Not bot.loop: it's still the stale loop captured at Bot() construction
+        # time (before asyncio.run(main()) creates the real one) until `async with
+        # bot:` runs, which happens *after* cogs load — scheduling on it here would
+        # silently never execute. asyncio.get_event_loop() picks up the loop that's
+        # actually running right now instead (same trick discord.ext.tasks uses).
+        asyncio.get_event_loop().create_task(self._start_server())
 
     async def _start_server(self) -> None:
         app = web.Application()
@@ -44,7 +50,7 @@ class HealthCog(commands.Cog):
 
     def cog_unload(self):
         if self.runner is not None:
-            self.bot.loop.create_task(self.runner.cleanup())
+            asyncio.get_event_loop().create_task(self.runner.cleanup())
 
 
 def setup(bot: discord.Bot):
