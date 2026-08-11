@@ -1,0 +1,112 @@
+[
+  {
+    "key": "camera",
+    "name": "Beat-Up 35mm Camera",
+    "category": "tool",
+    "description": "Peter's trusty camera. Must be equipped to turn crime encounters into sellable photos. Can break under fire.",
+    "max_durability": 100,
+    "price": 150
+  },
+  {
+    "key": "spandex_fabric",
+    "name": "Spandex Fabric",
+    "category": "component",
+    "description": "Suit repair component. Scavenged on patrol crime encounters, or buy it here as a pricier fallback.",
+    "max_durability": null,
+    "price": 80
+  },
+  {
+    "key": "micro_electronics",
+    "name": "Micro-Electronics",
+    "category": "component",
+    "description": "Suit repair component for web-shooter and lens electronics. Rarer patrol scavenge, or buy it here in a pinch.",
+    "max_durability": null,
+    "price": 150
+  },
+  {
+    "key": "web_fluid_vial",
+    "name": "Web-Fluid Vial",
+    "category": "collectible",
+    "description": "A stable batch out of the Chem Lab. Sells fine on the Trade Post.",
+    "max_durability": null
+  },
+  {
+    "key": "unstable_web_fluid",
+    "name": "Unstable Web-Fluid",
+    "category": "collectible",
+    "description": "A batch that came out wrong in the best way. Doesn't do anything — doesn't need to. Half the server wants one just to say they've got one.",
+    "max_durability": null
+  },
+  {
+    "key": "gift_flowers",
+    "name": "Bodega Flowers",
+    "category": "gift",
+    "description": "Cheap and it works — the first few times. Bring these every visit and they'll stop meaning anything.",
+    "max_durability": null,
+    "price": 25,
+    "happiness_boost": 25
+  },
+  {
+    "key": "gift_dinner",
+    "name": "Dinner Takeout",
+    "category": "gift",
+    "description": "A real gesture, not just a reflex. Still loses its shine if it's all you ever bring.",
+    "max_durability": null,
+    "price": 60,
+    "happiness_boost": 40
+  },
+  {
+    "key": "gift_jewelry",
+    "name": "Jewelry",
+    "category": "gift",
+    "description": "Expensive enough to actually land, even on a bad week.",
+    "max_durability": null,
+    "price": 150,
+    "happiness_boost": 70
+  },
+  {
+    "key": "web_shooters",
+    "name": "Web-Shooters",
+    "category": "gadget",
+    "description": "The classic. Rapid-fire webbing to pin an enemy down before they land a hit. Chance to fully block incoming suit damage on patrol.",
+    "max_durability": 100,
+    "price": 200,
+    "unlock_level": 1
+  },
+  {
+    "key": "web_grabber",
+    "name": "Web Grabber",
+    "category": "gadget",
+    "description": "Pulls enemies into a cluster for an easy multi-hit — and a grateful crowd tends to notice. Chance of a bonus cash donation on patrol.",
+    "max_durability": 100,
+    "price": 350,
+    "unlock_level": 5
+  },
+  {
+    "key": "ricochet_web",
+    "name": "Ricochet Web",
+    "category": "gadget",
+    "description": "A bouncing web projectile that ricochets between targets, tearing gear loose along the way. Chance of a big bonus to component scavenging on patrol.",
+    "max_durability": 100,
+    "price": 500,
+    "unlock_level": 10
+  },
+  {
+    "key": "upshot",
+    "name": "Upshot",
+    "category": "gadget",
+    "description": "Launches enemies straight up for an airborne combo — the kind of takedown that's worth telling people about. Chance of bonus reputation XP on patrol.",
+    "max_durability": 100,
+    "price": 650,
+    "unlock_level": 15
+  },
+  {
+    "key": "concussion_burst",
+    "name": "Concussion Burst",
+    "category": "gadget",
+    "description": "A shockwave that blows back a whole group at once. The best defensive gadget there is — chance to halve suit damage and keep your camera safe on patrol.",
+    "max_durability": 100,
+    "price": 900,
+    "unlock_level": 20
+  }
+]

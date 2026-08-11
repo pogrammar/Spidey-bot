@@ -1,0 +1,59 @@
+{
+  "base_cash": [40, 90],
+  "cash_per_streak_day": 6,
+  "base_xp": [8, 16],
+  "xp_per_streak_day": 1,
+  "streak_scaling_cap_days": 29,
+  "bonus_table": [
+    {"key": "gift", "weight": 20},
+    {"key": "web_fluid", "weight": 20},
+    {"key": "component", "weight": 18},
+    {"key": "cash_jackpot", "weight": 15},
+    {"key": "gadget_upgrade", "weight": 6},
+    {"key": "collectible", "weight": 2},
+    {"key": "none", "weight": 19}
+  ],
+  "gift_table": [
+    {"item_key": "gift_flowers", "weight": 60},
+    {"item_key": "gift_dinner", "weight": 30},
+    {"item_key": "gift_jewelry", "weight": 10}
+  ],
+  "component_table": ["spandex_fabric", "micro_electronics"],
+  "web_fluid_range": [2, 4],
+  "component_qty_range": [1, 2],
+  "cash_jackpot_range": [80, 200],
+  "gadget_upgrade_fallback_cash": [150, 300],
+  "milestones": {
+    "7": {
+      "label": "One Week Strong",
+      "cash": [150, 250],
+      "xp": [30, 50],
+      "gift": "gift_jewelry"
+    },
+    "14": {
+      "label": "Two Weeks In",
+      "cash": [250, 400],
+      "xp": [50, 80],
+      "components": 3
+    },
+    "30": {
+      "label": "A Month of Web-Slinging",
+      "cash": [400, 600],
+      "xp": [80, 120],
+      "gadget_upgrade": true
+    },
+    "60": {
+      "label": "Two Months Running",
+      "cash": [700, 1000],
+      "xp": [150, 220],
+      "collectible": true
+    },
+    "100": {
+      "label": "Triple Digits",
+      "cash": [1500, 2200],
+      "xp": [300, 450],
+      "collectible": true,
+      "gadget_upgrade": true
+    }
+  }
+}

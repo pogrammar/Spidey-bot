@@ -1,0 +1,115 @@
+{
+  "patrol": [
+    {
+      "key": "nothing",
+      "weight": 35,
+      "flavor": [
+        "The streets are quiet tonight. Just cats stuck in trees.",
+        "You swing a full loop around Queens and nothing's going down.",
+        "A slow night. You catch your breath on a water tower.",
+        "Dead quiet. Even the usual troublemakers are staying in.",
+        "You web-swing past a wedding on a rooftop. Nice for them.",
+        "A whole patrol and the biggest crime is someone's double-parked."
+      ],
+      "xp": [1, 3]
+    },
+    {
+      "key": "scenic",
+      "weight": 30,
+      "flavor": [
+        "You snap a nice skyline shot from a rooftop on the way back.",
+        "A decent sunset shot over the Chrysler Building.",
+        "You catch the Manhattan Bridge lit up just right.",
+        "A perfect shot of the Empire State Building through the fog.",
+        "You catch some kids flying a kite off a fire escape. Cute, sellable.",
+        "The Statue of Liberty at golden hour — JJJ's actually going to like this one."
+      ],
+      "xp": [2, 5],
+      "cash": [10, 30]
+    },
+    {
+      "key": "crime_bronze",
+      "weight": 22,
+      "flavor": [
+        "You stop a mugging in an alley off 5th.",
+        "A break-in at a bodega — you swing in just in time.",
+        "Some idiot tries to snatch a purse right in front of you.",
+        "A car alarm won't stop going off and you go check it out.",
+        "Some kid's about to get jumped outside a bodega.",
+        "Somebody's trying to boost a bike with bolt cutters in broad daylight."
+      ],
+      "xp": [8, 15],
+      "suit_damage": [5, 12],
+      "photo_quality": "bronze",
+      "camera_break_chance": 0.08,
+      "component_drop": {"item_key": "spandex_fabric", "chance": 0.25}
+    },
+    {
+      "key": "crime_gold",
+      "weight": 13,
+      "flavor": [
+        "A full-blown brawl with a low-level enforcer downtown.",
+        "Somebody's boosting a truck full of Oscorp hardware and it goes loud fast.",
+        "A hostage situation at a bank on 42nd — this one's bad.",
+        "Gunfire near Times Square — you're the first one there.",
+        "Someone's using tech way above street-level for a heist.",
+        "A whole block's worth of trouble, and it's all pointed at you now."
+      ],
+      "xp": [20, 35],
+      "suit_damage": [18, 30],
+      "photo_quality": "gold",
+      "camera_break_chance": 0.2,
+      "component_drop": {"item_key": "micro_electronics", "chance": 0.3}
+    }
+  ],
+  "donations": [
+    {
+      "key": "grateful_bystander",
+      "chance": 0.12,
+      "flavor": "A bystander presses a folded bill into your hand before you can swing off.",
+      "cash": [15, 40]
+    },
+    {
+      "key": "city_council_thanks",
+      "chance": 0.05,
+      "flavor": "A small thank-you check shows up from the city council for your help downtown.",
+      "cash": [50, 120]
+    }
+  ],
+  "hazards": [
+    {
+      "key": "medical_bill",
+      "chance": 0.05,
+      "flavor": "You landed wrong on that last swing. A trip to urgent care sets you back.",
+      "cash": [-80, -30]
+    },
+    {
+      "key": "lost_wallet_cash",
+      "chance": 0.03,
+      "flavor": "Somewhere between webbing up and changing in an alley, some cash slipped out of your pocket.",
+      "cash": [-40, -15]
+    },
+    {
+      "key": "mj_birthday_gift",
+      "chance": 0.02,
+      "flavor": "You almost forgot — MJ's birthday is this week. Better grab something good.",
+      "cash": [-70, -25]
+    },
+    {
+      "key": "aunt_may_flowers",
+      "chance": 0.03,
+      "flavor": "Aunt May's had a rough week. You swing by with flowers on the way home.",
+      "cash": [-35, -15]
+    }
+  ],
+  "tutoring": {
+    "cash": [80, 140],
+    "xp": [10, 20],
+    "crime_rise": [8, 15]
+  },
+  "bugle_payouts": {
+    "bronze": [50, 150],
+    "gold": [300, 600]
+  },
+  "jjj_multiplier": [0.8, 1.3]
+}
