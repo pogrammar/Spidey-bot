@@ -36,7 +36,7 @@ EXTENSIONS = [
 
 @bot.event
 async def on_ready():
-    log.info("Logged in as %s (id=%s).", bot.user, bot.user.id)
+    log.info("Logged in as %s (id=%s). [deploy test v1]", bot.user, bot.user.id)
 
 
 async def main():
