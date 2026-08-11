@@ -9,12 +9,14 @@ from alembic.config import Config as AlembicConfig
 import config
 from db.base import async_session
 from db.seed import seed_items
+from utils.mention_patch import apply as apply_mention_patch
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("spidey")
 
 intents = discord.Intents.default()
 bot = discord.Bot(intents=intents, debug_guilds=[config.DEV_GUILD_ID] if config.DEV_GUILD_ID else None)
+apply_mention_patch()
 
 EXTENSIONS = [
     "cogs.economy_cog",
