@@ -24,9 +24,10 @@ from utils.embeds import SPIDEY_GREEN, SPIDEY_RED, base_embed, error_embed
 # specifically so server/network lag can never be the reason someone loses a fight.
 BATTLE_ROUND_TIMEOUT = 30.0
 
-# Covers the worst case (3 rounds x 30s + margin) so a second /patrol can't sneak in
-# and start an overlapping fight. Reset to the normal 30s the moment the battle ends.
-BATTLE_LOCK_SECONDS = 130
+# Covers the worst case (max(ROUND_RANGE)=7 rounds x 30s + margin) so a second
+# /patrol can't sneak in and start an overlapping fight. Reset to the normal 30s the
+# moment the battle ends.
+BATTLE_LOCK_SECONDS = 250
 
 # The advanced suit is still trashed — you went out in the old homemade one instead.
 UNPROTECTED_FLAVOR = [

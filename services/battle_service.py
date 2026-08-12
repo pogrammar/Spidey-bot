@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass, field
 
@@ -17,7 +18,22 @@ from services.patrol_service import (
     roll_hazard,
 )
 
-MAX_ROUNDS = 3
+# Round count is rolled per-battle (see start_battle) instead of fixed, for pacing
+# variety — but it's picked once up front and shown to the player from round 1, so
+# there's never hidden information mid-fight, only variety between fights.
+ROUND_RANGE = [5, 6, 7]
+BASELINE_ROUNDS = 3  # what the base_hp values below, and every other balance number, were tuned against
+
+# How much extra enemy HP (beyond straight difficulty scaling) each round beyond
+# BASELINE_ROUNDS adds, per tier: hp_ratio = 1 + slope * (num_rounds - BASELINE_ROUNDS).
+# More rounds means less variance (law of large numbers), which cuts both ways: it
+# pulls bronze (already averaging *above* its required per-round damage rate) toward
+# an even higher win rate, and pulls gold (already averaging *below* its rate) toward
+# an even lower one. Naive proportional HP scaling (just num_rounds/BASELINE_ROUNDS)
+# doesn't correct for that — empirically verified via binary search across the full
+# level range that these two slopes are what it actually takes to hold each tier's
+# win rate steady as round count changes, not just scale HP with round count.
+ROUND_HP_SLOPE = {"crime_bronze": 0.36, "crime_gold": 0.27}
 
 ENEMY_STATS = {
     "crime_bronze": {
@@ -54,11 +70,26 @@ ENEMY_STATS = {
 
 ATTACK_HIT_CHANCE = 0.75
 ATTACK_DAMAGE = {"crime_bronze": [10, 18], "crime_gold": [12, 22]}
-# Enemy HP scales at the full difficulty rate; attack damage scales at half that rate.
-# That's deliberate — winning gets *harder* at higher levels (the gap between what you
-# hit for and what they can soak up widens), but never becomes mathematically
-# impossible the way flat attack damage against scaling HP would.
-ATTACK_DAMAGE_DIFFICULTY_SCALE = 0.65
+# Enemy HP scales faster than attack damage (90% of the rate) — deliberate, winning
+# still gets *harder* at higher levels. What changed: raw reputation-level difficulty
+# used to feed straight into enemy HP/damage uncapped, which meant gold crimes hit a
+# real wall around level 25-30 and stayed at ~0% win rate all the way to level 100 —
+# not "hard," mathematically closed off regardless of gear. COMBAT_DIFFICULTY_* below
+# soft-caps the difficulty used for win/loss math specifically (enemy HP, enemy
+# damage/hit-chance, attack scaling) so the curve keeps climbing past the threshold
+# but flattens toward the ceiling instead of running away forever. Only affects combat
+# stats — gadget wearout and camera-break odds still key off the raw, uncapped value.
+ATTACK_DAMAGE_DIFFICULTY_SCALE = 0.90
+COMBAT_DIFFICULTY_SOFT_CAP_THRESHOLD = 2.5
+COMBAT_DIFFICULTY_SOFT_CAP_CEILING = 3.2
+
+
+def _combat_difficulty(raw_difficulty: float) -> float:
+    if raw_difficulty <= COMBAT_DIFFICULTY_SOFT_CAP_THRESHOLD:
+        return raw_difficulty
+    excess = raw_difficulty - COMBAT_DIFFICULTY_SOFT_CAP_THRESHOLD
+    max_excess = COMBAT_DIFFICULTY_SOFT_CAP_CEILING - COMBAT_DIFFICULTY_SOFT_CAP_THRESHOLD
+    return COMBAT_DIFFICULTY_SOFT_CAP_THRESHOLD + max_excess * (1 - math.exp(-excess / max_excess))
 EVADE_DAMAGE_MULTIPLIER = 0.25  # incoming damage reduced to 25% if you're still caught evading
 
 # Evade doesn't deal damage itself, but it reads the enemy's rhythm — the next Attack
@@ -146,7 +177,7 @@ class BattleState:
     base_cash: int
     available_gadgets: list[tuple[str, str]]  # (item_key, name) — your loadout, up to 2
     round_number: int = 1
-    max_rounds: int = MAX_ROUNDS
+    max_rounds: int = BASELINE_ROUNDS
     total_suit_damage: int = 0
     bonus_xp: int = 0
     bonus_cash: int = 0
@@ -192,17 +223,25 @@ def start_battle(
     available_gadgets: list[tuple[str, str]],
 ) -> BattleState:
     stats = ENEMY_STATS[outcome_key]
-    enemy_hp = round(stats["base_hp"] * difficulty)
+    combat_difficulty = _combat_difficulty(difficulty)
+
+    num_rounds = random.choice(ROUND_RANGE)
+    hp_ratio = 1 + ROUND_HP_SLOPE[outcome_key] * (num_rounds - BASELINE_ROUNDS)
+    enemy_hp = round(stats["base_hp"] * combat_difficulty * hp_ratio)
+
     dmg_lo, dmg_hi = stats["base_damage"]
-    enemy_damage_range = [max(1, round(dmg_lo * difficulty)), max(2, round(dmg_hi * difficulty))]
-    enemy_hit_chance = min(0.8, stats["base_hit_chance"] + (difficulty - 1) * 0.1)
+    enemy_damage_range = [max(1, round(dmg_lo * combat_difficulty)), max(2, round(dmg_hi * combat_difficulty))]
+    enemy_hit_chance = min(0.8, stats["base_hit_chance"] + (combat_difficulty - 1) * 0.1)
 
     atk_lo, atk_hi = ATTACK_DAMAGE[outcome_key]
-    atk_scale = 1 + (difficulty - 1) * ATTACK_DAMAGE_DIFFICULTY_SCALE
+    atk_scale = 1 + (combat_difficulty - 1) * ATTACK_DAMAGE_DIFFICULTY_SCALE
     attack_damage_range = [round(atk_lo * atk_scale), round(atk_hi * atk_scale)]
 
     return BattleState(
         outcome_key=outcome_key,
+        # Raw (uncapped) difficulty — gadget wearout and camera-break odds key off
+        # this later and are meant to keep climbing with real level, unlike the
+        # win/loss combat stats above which use the soft-capped value.
         difficulty=difficulty,
         enemy_name=random.choice(stats["names"]),
         enemy_hp=enemy_hp,
@@ -215,6 +254,7 @@ def start_battle(
         base_xp=base_xp,
         base_cash=base_cash,
         available_gadgets=available_gadgets,
+        max_rounds=num_rounds,
     )
 
 

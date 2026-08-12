@@ -13,18 +13,24 @@ GADGET_CATEGORY = "gadget"
 MAX_UPGRADE_LEVEL = 3
 MAX_EQUIPPED_GADGETS = 2  # a real loadout choice — which two you bring matters
 UPGRADE_COST_MULTIPLIER = 0.6  # cost of upgrading to level N = price * MULTIPLIER * N
-UPGRADE_CHANCE_BONUS_PER_LEVEL = 0.05  # each upgrade level adds +5 percentage points to trigger chance
 
 GADGET_BASE_BREAK_CHANCE = 0.05  # per crime encounter while equipped, before level scaling
 
 # What each gadget actually does on patrol. `kind` is read by battle_service.py to
 # decide which effect branch to apply; `magnitude` is the effect's strength.
+# `bonus_per_level` is how many extra percentage points of trigger chance each
+# upgrade level adds — tiered by gadget quality (higher unlock level = bigger bonus
+# per level), so upgrading a better gadget pays off more, not the same flat amount
+# for everything. web_shooters is deliberately left at the original flat rate: it's
+# pure defense (blocks a hit for zero offensive damage), so making it trigger more
+# often trades away kill-securing rounds rather than helping win — bumping its
+# chance further would make it worse, not better.
 GADGET_EFFECTS: dict[str, dict] = {
-    "web_shooters": {"kind": "negate_damage", "base_chance": 0.25},
-    "web_grabber": {"kind": "bonus_donation", "base_chance": 0.20, "cash_range": [30, 70]},
-    "ricochet_web": {"kind": "scavenge_boost", "base_chance": 0.30, "magnitude": 0.25},
-    "upshot": {"kind": "bonus_xp", "base_chance": 0.25, "magnitude": 0.5},
-    "concussion_burst": {"kind": "group_defense", "base_chance": 0.30, "magnitude": 0.5},
+    "web_shooters": {"kind": "negate_damage", "base_chance": 0.25, "bonus_per_level": 0.05},
+    "web_grabber": {"kind": "bonus_donation", "base_chance": 0.55, "bonus_per_level": 0.11, "cash_range": [30, 70]},
+    "ricochet_web": {"kind": "scavenge_boost", "base_chance": 0.44, "bonus_per_level": 0.14, "magnitude": 0.25},
+    "upshot": {"kind": "bonus_xp", "base_chance": 0.30, "bonus_per_level": 0.145, "magnitude": 0.5},
+    "concussion_burst": {"kind": "group_defense", "base_chance": 0.38, "bonus_per_level": 0.19, "magnitude": 0.5},
 }
 
 
@@ -178,7 +184,7 @@ async def roll_gadget_effect(
     if effect is None:
         return None
 
-    chance = min(0.9, effect["base_chance"] + UPGRADE_CHANCE_BONUS_PER_LEVEL * target.upgrade_level)
+    chance = min(0.9, effect["base_chance"] + effect["bonus_per_level"] * target.upgrade_level)
     if random.random() >= chance:
         return None
 
