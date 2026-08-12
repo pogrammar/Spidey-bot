@@ -9,6 +9,7 @@ from alembic.config import Config as AlembicConfig
 import config
 from db.base import async_session
 from db.seed import seed_items
+from utils.first_run import announce_if_first_time
 from utils.mention_patch import apply as apply_mention_patch
 
 logging.basicConfig(level=logging.INFO)
@@ -17,6 +18,7 @@ log = logging.getLogger("spidey")
 intents = discord.Intents.default()
 bot = discord.Bot(intents=intents, debug_guilds=[config.DEV_GUILD_ID] if config.DEV_GUILD_ID else None)
 apply_mention_patch()
+bot.before_invoke(announce_if_first_time)
 
 EXTENSIONS = [
     "cogs.economy_cog",
@@ -38,6 +40,7 @@ EXTENSIONS = [
     "cogs.status_cog",
     "cogs.heartbeat_cog",
     "cogs.health_cog",
+    "cogs.v2_demo_cog",  # TEMPORARY — remove once done comparing Components V2
 ]
 
 

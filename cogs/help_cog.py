@@ -1,6 +1,8 @@
 import discord
 from discord.ext import commands
 
+from db.base import async_session
+from services.economy import get_or_create_user
 from utils.embeds import SPIDEY_BLUE, base_embed
 from utils.views import Paginator
 
@@ -125,6 +127,36 @@ def _build_pages() -> list[discord.Embed]:
 class HelpCog(commands.Cog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
+
+    @discord.slash_command(name="start", description="Brand new? Run this first.")
+    async def start(self, ctx: discord.ApplicationContext):
+        async with async_session() as session:
+            await get_or_create_user(session, ctx.author.id)
+
+        embed = base_embed(
+            "Friendly Neighborhood Orientation",
+            "You're Peter Parker — broke, in a homemade suit, rent due soon. Being "
+            "Spider-Man doesn't pay a cent by itself. Here's where to start.",
+            colour=SPIDEY_BLUE,
+        )
+        embed.add_field(
+            name="1. Claim your first reward",
+            value="`/daily claim` — free cash, reputation XP, and a random bonus pull. "
+            "Come back and claim it again tomorrow — the streak is worth building.",
+            inline=False,
+        )
+        embed.add_field(
+            name="2. Get out there",
+            value="`/patrol` — swing out and see what's happening. Costs a Web-Fluid "
+            "Vial (or cash if you're out), and crimes turn into a real fight.",
+            inline=False,
+        )
+        embed.add_field(
+            name="3. Everything else",
+            value="`/help` — the full rundown: money, gear, allies, trading, and more.",
+            inline=False,
+        )
+        await ctx.respond(embed=embed)
 
     @discord.slash_command(name="help", description="New here? Start with this.")
     async def help(self, ctx: discord.ApplicationContext):
