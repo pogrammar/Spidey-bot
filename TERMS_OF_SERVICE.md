@@ -44,4 +44,4 @@ These Terms may be updated at any time. Continued use of the Bot after changes a
 
 ## 9. Contact
 
-Questions about these Terms can be sent to: **[INSERT CONTACT EMAIL OR DISCORD USERNAME]**
+Questions about these Terms can be sent to: **betches.py** on Discord.

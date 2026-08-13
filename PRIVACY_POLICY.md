@@ -40,7 +40,7 @@ Use of the Bot is subject to Discord's own Terms of Service, which requires user
 
 ## 6. Contact
 
-Questions about this policy, or requests to delete your data, can be sent to: **[INSERT CONTACT EMAIL OR DISCORD USERNAME]**
+Questions about this policy, or requests to delete your data, can be sent to: **betches.py** on Discord.
 
 ## 7. Changes to This Policy
 
