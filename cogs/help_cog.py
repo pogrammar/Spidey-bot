@@ -320,7 +320,11 @@ class HelpCog(commands.Cog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
 
-    @discord.slash_command(name="start", description="Brand new? Run this first.")
+    @discord.slash_command(
+        name="start",
+        description="Brand new? Run this first.",
+        contexts={discord.InteractionContextType.guild, discord.InteractionContextType.bot_dm},
+    )
     async def start(self, ctx: discord.ApplicationContext):
         async with async_session() as session:
             await get_or_create_user(session, ctx.author.id)
