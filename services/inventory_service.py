@@ -41,3 +41,16 @@ async def remove_item(session: AsyncSession, user_id: int, item_key: str, quanti
 async def get_quantity(session: AsyncSession, user_id: int, item_key: str) -> int:
     stack = await _get_stack(session, user_id, item_key)
     return stack.quantity if stack is not None else 0
+
+
+async def get_editable_row(session: AsyncSession, user_id: int, item_key: str) -> InventoryItem | None:
+    """For admin edits (durability, upgrade level) where a player might own more than
+    one copy of the same item — the equipped copy if there is one, else whichever
+    copy has the highest durability, matching the same "best copy" convention
+    gadget_service uses for /gadget equip/upgrade."""
+    stmt = (
+        select(InventoryItem)
+        .where(InventoryItem.user_id == user_id, InventoryItem.item_key == item_key)
+        .order_by(InventoryItem.equipped.desc(), InventoryItem.durability.desc())
+    )
+    return (await session.execute(stmt)).scalars().first()

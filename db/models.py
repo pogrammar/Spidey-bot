@@ -179,3 +179,18 @@ class Brew(Base):
         DateTime, default=datetime.datetime.utcnow
     )
     ready_at: Mapped[datetime.datetime] = mapped_column(DateTime)
+
+
+class AdminUser(Base):
+    """Runtime-granted /admin access via /admin admins add, on top of the hardcoded
+    ADMIN_DISCORD_IDS in .env — those act as root (always trusted, can't be revoked
+    through a command); rows here are everyone else who's been granted access and
+    can also be revoked the same way they were granted."""
+
+    __tablename__ = "admin_users"
+
+    discord_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    granted_by: Mapped[int] = mapped_column(BigInteger)
+    granted_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, default=datetime.datetime.utcnow
+    )

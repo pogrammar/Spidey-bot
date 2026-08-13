@@ -1,3 +1,5 @@
+import random
+
 import discord
 from discord.ext import commands
 
@@ -5,7 +7,15 @@ from db.base import async_session
 from services.bugle_service import BUGLE_COOLDOWN_SECONDS, get_pending_summary, submit_photos
 from services.cooldowns import format_remaining, get_remaining_seconds, set_cooldown
 from services.economy import get_or_create_user
-from utils.embeds import base_embed, error_embed
+from utils.embeds import error_embed
+from utils.v2_embeds import StaticView
+
+BUGLE_FOOTERS = [
+    "Jameson still thinks you're a menace. The check clears anyway.",
+    "Front page material, allegedly.",
+    "Betty Brant is the only one who actually likes you here.",
+    "JJJ approved this payment through gritted teeth.",
+]
 
 
 class BugleCog(commands.Cog):
@@ -26,15 +36,18 @@ class BugleCog(commands.Cog):
             )
             return
 
-        embed = base_embed("Your Camera Roll", "Not sold yet — run /bugle submit to cash these in.")
-        for quality, count in summary.breakdown.items():
-            embed.add_field(name=quality.title(), value=f"x{count}", inline=True)
-        embed.add_field(
-            name="Estimated Total",
-            value=f"${summary.estimated_min:,} - ${summary.estimated_max:,}",
-            inline=False,
+        quality_fields = [(quality.title(), f"x{count}") for quality, count in summary.breakdown.items()]
+        description = (
+            f"Worth an estimated ${summary.estimated_min:,} - ${summary.estimated_max:,}. "
+            "Not sold yet — run /bugle submit to cash these in."
         )
-        await ctx.respond(embed=embed)
+        view = StaticView(
+            "Your Camera Roll",
+            description,
+            field_groups=[("On Hand", quality_fields)],
+            footer_lines=[random.choice(BUGLE_FOOTERS)],
+        )
+        await ctx.respond(view=view)
 
     @bugle.command(name="submit", description="Sell your captured photos to the Daily Bugle.")
     async def submit(self, ctx: discord.ApplicationContext):
@@ -60,22 +73,23 @@ class BugleCog(commands.Cog):
 
             await set_cooldown(session, user.discord_id, "bugle_submit", BUGLE_COOLDOWN_SECONDS)
 
-        embed = base_embed(
-            "Daily Bugle — Sold!", f"JJJ grumbles but pays up for {result.photos_sold} photo(s)."
-        )
-        embed.add_field(name="Payout", value=f"${result.total_cash:,}")
         breakdown = ", ".join(f"{count}x {quality}" for quality, count in result.breakdown.items())
-        embed.add_field(name="Breakdown", value=breakdown)
-        if result.ally_earnings_penalty:
-            embed.add_field(
-                name="Distracted",
-                value="Someone in your life needs attention — these photos came out worse for it. Check /ally check.",
-                inline=False,
-            )
+        complications = []
         if result.jam_flavor:
             sign = "+" if result.jam_handled else "-"
-            embed.add_field(name="Close Call", value=f"{result.jam_flavor} ({sign}${result.jam_amount:,})", inline=False)
-        await ctx.respond(embed=embed)
+            complications.append(("Close Call", f"{result.jam_flavor} ({sign}${result.jam_amount:,})"))
+
+        field_groups = [("Sale", [("Payout", f"${result.total_cash:,}"), ("Breakdown", breakdown)])]
+        if complications:
+            field_groups.append(("Complications", complications))
+
+        view = StaticView(
+            "Daily Bugle — Sold!",
+            f"JJJ grumbles but pays up for {result.photos_sold} photo(s).",
+            field_groups=field_groups,
+            footer_lines=[random.choice(BUGLE_FOOTERS)],
+        )
+        await ctx.respond(view=view)
 
 
 def setup(bot: discord.Bot):

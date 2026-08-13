@@ -90,6 +90,28 @@ async def get_current_happiness(session: AsyncSession, user_id: int, ally_key: s
     return _decayed_happiness(ally)
 
 
+async def set_happiness(session: AsyncSession, user_id: int, ally_key: str, value: int) -> int:
+    """Admin override — banks the value directly and resets the decay clock, same as
+    a real visit does, so it reads correctly on the next /ally check."""
+    ally = await _get_or_create_ally(session, user_id, ally_key)
+    ally.banked_happiness = max(0, min(100, value))
+    ally.last_visited_at = datetime.datetime.utcnow()
+    await session.commit()
+    return ally.banked_happiness
+
+
+async def reset_ally(session: AsyncSession, user_id: int, ally_key: str) -> None:
+    """Clears gift-streak and gift-usage history for one ally — does not touch
+    happiness itself, just the diminishing-returns/backfire tracking around gifts."""
+    ally = await _get_or_create_ally(session, user_id, ally_key)
+    ally.consecutive_gift_visits = 0
+
+    stmt = select(GiftUsage).where(GiftUsage.user_id == user_id, GiftUsage.ally_key == ally_key)
+    for usage in (await session.execute(stmt)).scalars():
+        await session.delete(usage)
+    await session.commit()
+
+
 async def _all_happiness(session: AsyncSession, user_id: int) -> list[int]:
     return [await get_current_happiness(session, user_id, key) for key in ALLY_NAMES]
 

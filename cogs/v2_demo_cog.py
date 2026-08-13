@@ -2,8 +2,17 @@
 Not part of the real game. Safe to delete this file and its EXTENSIONS entry in
 bot.py once you've seen enough."""
 
+import random
+
 import discord
 from discord.ext import commands
+
+DEMO_FOOTERS = [
+    "Peter Parker did not build this UI. A friendly neighborhood dev did.",
+    "No radioactive spiders were involved in this component tree.",
+    "Even Tony Stark reads the docs sometimes.",
+    "This demo will self-destruct once you've seen enough. (It won't. Just delete the file.)",
+]
 
 
 class TryMeButton(discord.ui.Button):
@@ -50,7 +59,11 @@ class V2DemoView(discord.ui.DesignerView):
         )
         container.add_item(button_section)
         container.add_item(discord.ui.Separator())
-        container.add_item(discord.ui.TextDisplay("-# Temporary demo command — not part of the real game."))
+        container.add_item(
+            discord.ui.TextDisplay(
+                f"-# {random.choice(DEMO_FOOTERS)}\n-# Temporary demo command — not part of the real game.\n-# discord.gg/spider-man"
+            )
+        )
 
         self.add_item(container)
 

@@ -1,3 +1,5 @@
+import random
+
 import discord
 from discord.ext import commands
 
@@ -5,7 +7,15 @@ from db.base import async_session
 from services.cooldowns import format_remaining
 from services.daily_service import claim_daily, get_streak_status
 from services.economy import get_or_create_user
-from utils.embeds import SPIDEY_BLUE, SPIDEY_GREEN, base_embed, error_embed
+from utils.embeds import error_embed
+from utils.v2_embeds import StaticView
+
+DAILY_FOOTERS = [
+    "Consistency: the real superpower nobody talks about.",
+    "Miss a day and the whole bit falls apart. No pressure.",
+    "J. Jonah Jameson doesn't believe in streaks. You do.",
+    "Every hero needs a routine. This is apparently yours.",
+]
 
 
 def _progress_bar(streak: int, target: int, segments: int = 10) -> str:
@@ -37,32 +47,40 @@ class DailyCog(commands.Cog):
         if broke_streak:
             headline += " — streak reset, back to day 1"
 
-        colour = SPIDEY_GREEN if result.bonus_key not in ("none",) or result.milestone_label else SPIDEY_BLUE
-        embed = base_embed(headline, colour=colour)
-
-        embed.add_field(name="Cash", value=f"+${result.cash_gained:,}")
-        embed.add_field(name="Reputation XP", value=f"+{result.xp_gained}")
-        embed.add_field(name="Longest Streak", value=f"{result.longest_streak} days")
+        field_groups = [
+            (
+                "Rewards",
+                [
+                    ("Cash", f"+${result.cash_gained:,}"),
+                    ("Reputation XP", f"+{result.xp_gained}"),
+                    ("Longest Streak", f"{result.longest_streak} days"),
+                ],
+            )
+        ]
 
         if result.bonus_flavor:
-            embed.add_field(name="🎁 Bonus Pull", value=result.bonus_flavor, inline=False)
+            field_groups.append(("🎁 Bonus Pull", [("", result.bonus_flavor)]))
 
         if result.milestone_label:
-            embed.add_field(
-                name="🏆 Milestone!",
-                value=f"**{result.milestone_label}** — included above: +${result.milestone_cash:,}, +{result.milestone_xp} XP",
-                inline=False,
+            milestone_value = (
+                f"**{result.milestone_label}** — included above: "
+                f"+${result.milestone_cash:,}, +{result.milestone_xp} XP"
             )
+            field_groups.append(("🏆 Milestone!", [("", milestone_value)]))
 
         if status and status.next_milestone:
-            embed.add_field(
-                name=f"Next milestone: Day {status.next_milestone}",
-                value=f"{_progress_bar(result.streak, status.next_milestone)}  ({status.days_to_next_milestone} to go)",
-                inline=False,
-            )
+            progress_value = f"{_progress_bar(result.streak, status.next_milestone)}  ({status.days_to_next_milestone} to go)"
+            field_groups.append((None, [(f"Next milestone: Day {status.next_milestone}", progress_value)]))
 
-        embed.set_footer(text="Miss more than 48 hours and the streak resets — come back tomorrow.")
-        await ctx.respond(embed=embed)
+        view = StaticView(
+            headline,
+            field_groups=field_groups,
+            footer_lines=[
+                "Miss more than 48 hours and the streak resets — come back tomorrow.",
+                random.choice(DAILY_FOOTERS),
+            ],
+        )
+        await ctx.respond(view=view)
 
     @daily.command(name="status", description="Check your streak without claiming.")
     async def status(self, ctx: discord.ApplicationContext):
@@ -70,26 +88,24 @@ class DailyCog(commands.Cog):
             user = await get_or_create_user(session, ctx.author.id)
             status = await get_streak_status(session, user)
 
-        embed = base_embed(f"🔥 {status.streak}-Day Streak", colour=SPIDEY_BLUE)
-        embed.add_field(name="Longest Streak", value=f"{status.longest_streak} days")
+        fields = [("Longest Streak", f"{status.longest_streak} days")]
 
         if status.can_claim:
-            embed.add_field(name="Status", value="✅ Ready to claim — run /daily claim", inline=False)
+            fields.append(("Status", "✅ Ready to claim — run /daily claim"))
         else:
             risk_note = " (miss it and your streak resets)" if status.at_risk else ""
-            embed.add_field(
-                name="Status",
-                value=f"Next claim in {format_remaining(status.seconds_until_claim)}{risk_note}",
-                inline=False,
-            )
+            fields.append(("Status", f"Next claim in {format_remaining(status.seconds_until_claim)}{risk_note}"))
 
         if status.next_milestone:
-            embed.add_field(
-                name=f"Next milestone: Day {status.next_milestone}",
-                value=f"{_progress_bar(status.streak, status.next_milestone)}  ({status.days_to_next_milestone} to go)",
-                inline=False,
-            )
-        await ctx.respond(embed=embed)
+            fields.append((
+                f"Next milestone: Day {status.next_milestone}",
+                f"{_progress_bar(status.streak, status.next_milestone)}  ({status.days_to_next_milestone} to go)",
+            ))
+
+        view = StaticView(
+            f"🔥 {status.streak}-Day Streak", fields=fields, footer_lines=[random.choice(DAILY_FOOTERS)]
+        )
+        await ctx.respond(view=view)
 
 
 def setup(bot: discord.Bot):

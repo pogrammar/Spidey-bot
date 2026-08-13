@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import InventoryItem, Item, Transaction, User
+from db.models import Ally, Brew, Cooldown, GiftUsage, InventoryItem, Item, MarketListing, PendingPhoto, Transaction, User
 
 STARTER_CAMERA_KEY = "camera"
 
@@ -54,6 +55,21 @@ async def add_wallet(session: AsyncSession, user: User, amount: int, reason: str
             amount=actual_delta,
             reason=reason,
         )
+    )
+    await session.commit()
+    return actual_delta
+
+
+async def add_bank(session: AsyncSession, user: User, amount: int, reason: str) -> int:
+    """Admin-only direct bank injection — mirrors add_wallet but for the bank balance.
+    Deliberately not clamped to bank_capacity: a limit meant to gate normal deposits
+    shouldn't reject an admin grant."""
+    before = user.bank
+    user.bank = max(0, user.bank + amount)
+    actual_delta = user.bank - before
+
+    session.add(
+        Transaction(user_id=user.discord_id, balance_type="bank", amount=actual_delta, reason=reason)
     )
     await session.commit()
     return actual_delta
@@ -126,3 +142,22 @@ async def withdraw(session: AsyncSession, user: User, amount: int) -> tuple[bool
     )
     await session.commit()
     return True, f"Withdrew ${amount:,}."
+
+
+async def wipe_user(session: AsyncSession, user_id: int) -> bool:
+    """Permanently erases a profile — inventory, cooldowns, allies, brew, listings,
+    the works. Returns False if there was nothing to wipe. Transaction rows (the
+    audit log) are deliberately left alone even on a wipe. Not the ORM's cascade
+    (relationship cascades don't reliably fire for every deletion path we care about
+    here) — explicit bulk deletes for every table that references this user."""
+    user = await session.get(User, user_id)
+    if user is None:
+        return False
+
+    for model in (InventoryItem, PendingPhoto, Cooldown, Ally, GiftUsage, Brew):
+        await session.execute(delete(model).where(model.user_id == user_id))
+    await session.execute(delete(MarketListing).where(MarketListing.seller_id == user_id))
+
+    await session.delete(user)
+    await session.commit()
+    return True

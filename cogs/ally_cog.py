@@ -1,3 +1,5 @@
+import random
+
 import discord
 from discord import Option, OptionChoice
 from discord.ext import commands
@@ -7,9 +9,17 @@ from services.ally_service import ALLY_NAMES, get_current_happiness, list_gift_i
 from services.busy import get_busy, set_busy
 from services.cooldowns import format_remaining
 from services.economy import get_or_create_user
-from utils.embeds import SPIDEY_BLUE, base_embed, error_embed
+from utils.embeds import error_embed
+from utils.v2_embeds import StaticView
 
 ALLY_CHOICES = [OptionChoice(name=name, value=key) for key, name in ALLY_NAMES.items()]
+
+ALLY_FOOTERS = [
+    "May still worries. MJ still notices when you're distracted.",
+    "The people who matter don't care about your patrol stats.",
+    "Being Spider-Man is easy. This part isn't.",
+    "Someone in your life deserves better texts back.",
+]
 
 
 async def gift_autocomplete(ctx: discord.AutocompleteContext) -> list[discord.OptionChoice]:
@@ -38,12 +48,15 @@ class AllyCog(commands.Cog):
                 key: await get_current_happiness(session, user.discord_id, key) for key in ALLY_NAMES
             }
 
-        embed = base_embed("Who You're Neglecting", colour=SPIDEY_BLUE)
+        field_groups = []
         for key, name in ALLY_NAMES.items():
             level = happiness[key]
             note = " — she's noticed you've been busy." if level < 30 else ""
-            embed.add_field(name=name, value=f"{level}/100{note}", inline=False)
-        await ctx.respond(embed=embed)
+            field_groups.append((name, [("", f"{level}/100{note}")]))
+        view = StaticView(
+            "Who You're Neglecting", field_groups=field_groups, footer_lines=[random.choice(ALLY_FOOTERS)]
+        )
+        await ctx.respond(view=view)
 
     @ally.command(name="visit", description="Spend some time with Aunt May or MJ.")
     async def visit(
@@ -79,16 +92,24 @@ class AllyCog(commands.Cog):
         else:
             flavor = f"You spend some real time with {name}."
 
-        embed = base_embed(f"Visiting {name}", flavor)
         sign = "+" if result.happiness_delta >= 0 else ""
-        embed.add_field(name="Happiness", value=f"{result.new_happiness}/100 ({sign}{result.happiness_delta})")
+        fields = [("Happiness", f"{result.new_happiness}/100 ({sign}{result.happiness_delta})")]
         if result.backfired:
-            embed.add_field(
-                name="Gift Fatigue", value="Too many gifts in a row — give it a visit with nothing next time.", inline=False
-            )
-        embed.add_field(name="Time Spent", value=format_remaining(result.visit_seconds), inline=False)
-        embed.set_footer(text=f"You can't /patrol again for {format_remaining(result.visit_seconds)}.")
-        await ctx.respond(embed=embed)
+            fields.append((
+                "Gift Fatigue", "Too many gifts in a row — give it a visit with nothing next time.",
+            ))
+        fields.append(("Time Spent", format_remaining(result.visit_seconds)))
+
+        view = StaticView(
+            f"Visiting {name}",
+            flavor,
+            fields=fields,
+            footer_lines=[
+                f"You can't /patrol again for {format_remaining(result.visit_seconds)}.",
+                random.choice(ALLY_FOOTERS),
+            ],
+        )
+        await ctx.respond(view=view)
 
 
 def setup(bot: discord.Bot):

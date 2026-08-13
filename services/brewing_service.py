@@ -36,6 +36,29 @@ async def get_brew_status(session: AsyncSession, user_id: int) -> Brew | None:
     return await _get_active_brew(session, user_id)
 
 
+async def force_ready(session: AsyncSession, user_id: int) -> bool:
+    """Admin override — instantly finishes an in-progress brew. Returns False if
+    there's nothing brewing."""
+    brew = await _get_active_brew(session, user_id)
+    if brew is None:
+        return False
+    brew.ready_at = datetime.datetime.utcnow()
+    await session.commit()
+    return True
+
+
+async def clear_brew(session: AsyncSession, user_id: int) -> bool:
+    """Admin override — cancels a stuck brew outright (no refund; use force_ready
+    instead if the goal is just to unblock /lab collect). Returns False if there's
+    nothing brewing."""
+    brew = await _get_active_brew(session, user_id)
+    if brew is None:
+        return False
+    await session.delete(brew)
+    await session.commit()
+    return True
+
+
 async def start_brew(session: AsyncSession, user: User) -> tuple[bool, str]:
     if await _get_active_brew(session, user.discord_id) is not None:
         return False, "You've already got a batch cooking. Check /lab status."

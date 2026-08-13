@@ -1,3 +1,5 @@
+import random
+
 import discord
 from discord import Option
 from discord.ext import commands
@@ -12,9 +14,16 @@ from services.market_service import (
     list_active,
     list_sellable_items,
 )
-from utils.embeds import SPIDEY_BLUE, base_embed, error_embed
+from utils.embeds import base_embed, error_embed
 from utils.item_display import badge
-from utils.views import Paginator
+from utils.v2_embeds import PaginatedView, StaticView
+
+MARKET_FOOTERS = [
+    "Somewhere, Kingpin is taking notes on the free market.",
+    "No warranty on anything bought from another vigilante.",
+    "The Trade Post: where heroes haggle like everyone else.",
+    "Buyer beware — this economy runs on Parker Luck.",
+]
 
 LISTINGS_PER_PAGE = 5
 
@@ -31,21 +40,20 @@ async def sellable_autocomplete(ctx: discord.AutocompleteContext) -> list[discor
     ][:25]
 
 
-def _build_listing_pages(listings: list[ListingView]) -> list[discord.Embed]:
+def _build_listing_pages(listings: list[ListingView]) -> list[dict]:
     pages = []
     total_pages = max(1, (len(listings) - 1) // LISTINGS_PER_PAGE + 1)
     for page_num in range(total_pages):
         chunk = listings[page_num * LISTINGS_PER_PAGE : (page_num + 1) * LISTINGS_PER_PAGE]
-        embed = base_embed("Trade Post", colour=SPIDEY_BLUE)
-        for listing in chunk:
-            embed.add_field(
-                name=f"{badge(listing.item_key)}{listing.item_name}",
-                value=f"**ID: {listing.id}**\nx{listing.quantity} @ ${listing.price_per_unit:,} each "
+        fields = [
+            (
+                f"{badge(listing.item_key)}{listing.item_name}",
+                f"**ID: {listing.id}**\nx{listing.quantity} @ ${listing.price_per_unit:,} each "
                 f"(${listing.quantity * listing.price_per_unit:,} total)\nSeller: <@{listing.seller_id}>",
-                inline=False,
             )
-        embed.set_footer(text=f"Page {page_num + 1}/{total_pages} — buy with /market buy <id>")
-        pages.append(embed)
+            for listing in chunk
+        ]
+        pages.append({"title": "Trade Post", "fields": fields})
     return pages
 
 
@@ -100,12 +108,16 @@ class MarketCog(commands.Cog):
             return
 
         pages = _build_listing_pages(listings)
+        footer_lines = ["Buy with /market buy <id>.", random.choice(MARKET_FOOTERS)]
+
         if len(pages) == 1:
-            await ctx.respond(embed=pages[0])
+            view = StaticView(pages[0]["title"], fields=pages[0]["fields"], footer_lines=footer_lines)
+            await ctx.respond(view=view)
             return
 
-        view = Paginator(pages, author_id=ctx.author.id)
-        await ctx.respond(embed=pages[0], view=view)
+        view = PaginatedView(pages, author_id=ctx.author.id, footer_lines=footer_lines)
+        await ctx.respond(view=view)
+        view.message = await ctx.interaction.original_response()
 
     @market.command(name="sell", description="List an item for sale.")
     async def sell(
@@ -128,14 +140,20 @@ class MarketCog(commands.Cog):
         async with async_session() as session:
             user = await get_or_create_user(session, ctx.author.id)
             ok, message = await buy_listing(session, user, listing_id)
-        await ctx.respond(embed=base_embed("Trade Post", message) if ok else error_embed(message))
+        if ok:
+            await ctx.respond(view=StaticView("Trade Post", description=message, footer_lines=[random.choice(MARKET_FOOTERS)]))
+        else:
+            await ctx.respond(embed=error_embed(message))
 
     @market.command(name="cancel", description="Cancel your own listing and get the items back.")
     async def cancel(self, ctx: discord.ApplicationContext, listing_id: Option(int, "Listing ID")):
         async with async_session() as session:
             user = await get_or_create_user(session, ctx.author.id)
             ok, message = await cancel_listing(session, user, listing_id)
-        await ctx.respond(embed=base_embed("Trade Post", message) if ok else error_embed(message))
+        if ok:
+            await ctx.respond(view=StaticView("Trade Post", description=message, footer_lines=[random.choice(MARKET_FOOTERS)]))
+        else:
+            await ctx.respond(embed=error_embed(message))
 
 
 def setup(bot: discord.Bot):

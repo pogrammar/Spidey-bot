@@ -1,3 +1,5 @@
+import random
+
 import discord
 from discord.ext import commands
 
@@ -11,7 +13,15 @@ from services.suit_service import (
     SPANDEX_ITEM_KEY,
     repair_suit,
 )
-from utils.embeds import SPIDEY_BLUE, base_embed, error_embed
+from utils.embeds import error_embed
+from utils.v2_embeds import StaticView
+
+WORKBENCH_FOOTERS = [
+    "Held together with duct tape and pure willpower.",
+    "Aunt May still doesn't know what you do to this suit.",
+    "Every rip has a story. Most of them end in a dumpster.",
+    "Reed Richards would be appalled by this stitching.",
+]
 
 
 class SuitCog(commands.Cog):
@@ -28,22 +38,24 @@ class SuitCog(commands.Cog):
             electronics = await get_quantity(session, user.discord_id, ELECTRONICS_ITEM_KEY)
 
         missing = 100 - user.suit_integrity
-        embed = base_embed("Workbench", colour=SPIDEY_BLUE)
-        embed.add_field(name="Suit Integrity", value=f"{user.suit_integrity}%")
-
+        suit_fields = [("Suit Integrity", f"{user.suit_integrity}%")]
         if missing > 0:
             cost = missing * REPAIR_COST_PER_POINT
             extra = " + 1 Micro-Electronics" if missing >= ELECTRONICS_THRESHOLD else ""
-            embed.add_field(name="Full Repair Cost", value=f"${cost:,} + 1 Spandex Fabric{extra}")
+            suit_fields.append(("Full Repair Cost", f"${cost:,} + 1 Spandex Fabric{extra}"))
 
-        embed.add_field(name="Spandex Fabric", value=str(spandex))
-        embed.add_field(name="Micro-Electronics", value=str(electronics))
+        component_fields = [("Spandex Fabric", str(spandex)), ("Micro-Electronics", str(electronics))]
 
+        footer_lines = [random.choice(WORKBENCH_FOOTERS)]
         if user.eviction_meter >= 100:
-            embed.add_field(
-                name="Locked Out", value="Workbench access cut off until rent's paid.", inline=False
-            )
-        await ctx.respond(embed=embed)
+            footer_lines.insert(0, "Locked out — workbench access cut off until rent's paid.")
+
+        view = StaticView(
+            "Workbench",
+            field_groups=[("Suit", suit_fields), ("Components on Hand", component_fields)],
+            footer_lines=footer_lines,
+        )
+        await ctx.respond(view=view)
 
     @workbench.command(name="repair", description="Repair your suit back to 100%.")
     async def repair(self, ctx: discord.ApplicationContext):
@@ -55,11 +67,17 @@ class SuitCog(commands.Cog):
             await ctx.respond(embed=error_embed(result.message))
             return
 
-        embed = base_embed("Workbench", result.message)
         extra = " + 1 Micro-Electronics" if result.used_electronics else ""
-        embed.add_field(name="Cost", value=f"${result.cash_cost:,} + 1 Spandex Fabric{extra}")
-        embed.add_field(name="Restored", value=f"+{result.restored}%")
-        await ctx.respond(embed=embed)
+        view = StaticView(
+            "Workbench",
+            result.message,
+            fields=[
+                ("Cost", f"${result.cash_cost:,} + 1 Spandex Fabric{extra}"),
+                ("Restored", f"+{result.restored}%"),
+            ],
+            footer_lines=[random.choice(WORKBENCH_FOOTERS)],
+        )
+        await ctx.respond(view=view)
 
 
 def setup(bot: discord.Bot):

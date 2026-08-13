@@ -92,6 +92,24 @@ async def cancel_listing(session: AsyncSession, seller: User, listing_id: int) -
     return True, "Listing cancelled, items back in your inventory."
 
 
+async def admin_cancel_listing(session: AsyncSession, listing_id: int) -> tuple[bool, str]:
+    """Same refund behavior as cancel_listing, but skips the seller-identity check —
+    for moderation, not the seller taking their own listing down."""
+    listing = await session.get(MarketListing, listing_id)
+    if listing is None:
+        return False, "That listing doesn't exist."
+
+    item = await session.get(Item, listing.item_key)
+    item_name = item.name if item else listing.item_key
+    seller_id = listing.seller_id
+    quantity = listing.quantity
+
+    await add_item(session, seller_id, listing.item_key, quantity)
+    await session.delete(listing)
+    await session.commit()
+    return True, f"Deleted listing #{listing_id} ({quantity}x {item_name}), refunded to <@{seller_id}>."
+
+
 async def buy_listing(session: AsyncSession, buyer: User, listing_id: int) -> tuple[bool, str]:
     listing = await session.get(MarketListing, listing_id)
     if listing is None:

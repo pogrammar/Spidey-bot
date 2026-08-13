@@ -4,7 +4,15 @@ import discord
 from discord.ext import commands
 
 from db.base import async_session
-from services.battle_service import BattleReport, BattleState, finalize_battle, resolve_attack, resolve_evade, resolve_gadget, start_battle
+from services.battle_service import (
+    BattleReport,
+    BattleState,
+    finalize_battle,
+    resolve_attack,
+    resolve_evade,
+    resolve_gadget,
+    start_battle,
+)
 from services.busy import get_busy
 from services.cooldowns import format_remaining, get_remaining_seconds, set_cooldown
 from services.economy import get_or_create_user
@@ -17,7 +25,8 @@ from services.patrol_service import (
     finish_noncombat_patrol,
 )
 from services.suit_service import repair_readiness_warning
-from utils.embeds import SPIDEY_GREEN, SPIDEY_RED, base_embed, error_embed
+from utils.embeds import error_embed
+from utils.v2_embeds import StaticView, add_field_groups
 
 # Round decisions get a full 30 seconds — this is a choice, not a reflex test. Outcomes
 # depend on which action you pick + a dice roll behind it, never on how fast you click,
@@ -37,12 +46,43 @@ UNPROTECTED_FLAVOR = [
 ]
 
 
+def _bar(current: int, maximum: int, filled_emoji: str, segments: int = 10) -> str:
+    if maximum <= 0:
+        return "⬜" * segments
+    filled = max(0, min(segments, round((current / maximum) * segments)))
+    return filled_emoji * filled + "⬜" * (segments - filled)
+
+
+def _cap(name: str) -> str:
+    """Capitalizes just the first letter — str.capitalize() also lowercases the rest,
+    which mangles names with their own internal capitals (e.g. "a Sable mercenary")."""
+    return name[0].upper() + name[1:] if name else name
+
+
+class AttackButton(discord.ui.Button):
+    def __init__(self, battle_view: "PatrolBattleView", *, disabled: bool):
+        super().__init__(label="Attack", emoji="⚡", style=discord.ButtonStyle.danger, disabled=disabled)
+        self.battle_view = battle_view
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.battle_view._advance(interaction, resolve_attack(self.battle_view.state))
+
+
+class EvadeButton(discord.ui.Button):
+    def __init__(self, battle_view: "PatrolBattleView", *, disabled: bool):
+        super().__init__(label="Evade", emoji="🛡️", style=discord.ButtonStyle.primary, disabled=disabled)
+        self.battle_view = battle_view
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.battle_view._advance(interaction, resolve_evade(self.battle_view.state))
+
+
 class GadgetActionButton(discord.ui.Button):
     """One of these gets added per equipped gadget (up to 2) — a real loadout choice
     instead of a single fixed button, since which gadget to spend matters."""
 
-    def __init__(self, gadget_key: str, gadget_name: str, battle_view: "PatrolBattleView"):
-        super().__init__(label=f"🔧 {gadget_name}", style=discord.ButtonStyle.success)
+    def __init__(self, gadget_key: str, gadget_name: str, battle_view: "PatrolBattleView", *, disabled: bool):
+        super().__init__(label=gadget_name, emoji="🔧", style=discord.ButtonStyle.success, disabled=disabled)
         self.gadget_key = gadget_key
         self.battle_view = battle_view
 
@@ -52,104 +92,137 @@ class GadgetActionButton(discord.ui.Button):
         await self.battle_view._advance(interaction, line)
 
 
-class PatrolBattleView(discord.ui.View):
-    def __init__(self, state: BattleState, author_id: int):
+class PatrolBattleView(discord.ui.DesignerView):
+    def __init__(self, state: BattleState, author_id: int, intro_banner: str):
         super().__init__(timeout=BATTLE_ROUND_TIMEOUT)
         self.state = state
         self.author_id = author_id
-
-        self.gadget_buttons: list[GadgetActionButton] = []
-        for key, name in state.available_gadgets:
-            btn = GadgetActionButton(key, name, self)
-            self.gadget_buttons.append(btn)
-            self.add_item(btn)
-
-        self._sync_buttons()
-
-    def _sync_buttons(self) -> None:
-        ended = self.state.ended
-        self.attack_button.disabled = ended
-        self.evade_button.disabled = ended
-        for btn in self.gadget_buttons:
-            btn.disabled = ended or btn.gadget_key in self.state.broken_gadget_keys
-
-    def render(self, banner: str | None = None) -> discord.Embed:
-        round_num = min(self.state.round_number, self.state.max_rounds)
-        tier = "Gold" if self.state.outcome_key == "crime_gold" else "Bronze"
-        embed = base_embed(
-            f"Patrol Battle — {tier} — Round {round_num}/{self.state.max_rounds}",
-            banner or f"You run into {self.state.enemy_name}.",
-        )
-        embed.add_field(name="Enemy", value=f"{self.state.enemy_hp}/{self.state.enemy_max_hp} HP")
-        embed.add_field(name="Your Suit", value=f"{self.state.suit_remaining}%")
-        if self.state.combo_ready:
-            embed.add_field(name="⚡ Combo Ready", value="Next Attack is a guaranteed hit for bonus damage.", inline=False)
-        if self.state.log:
-            embed.add_field(
-                name="Log", value="\n".join(f"• {line}" for line in self.state.log[-3:]), inline=False
-            )
-        if not self.state.available_gadgets:
-            embed.set_footer(text="No gadgets equipped this fight.")
-        return embed
-
-    def _final_embed(self, report: BattleReport, timed_out: bool = False) -> discord.Embed:
-        if timed_out:
-            result_label = "⏱️ Timed Out"
-            headline = "You hesitate too long and the moment passes."
-            colour = SPIDEY_RED
-        elif report.won_clean:
-            result_label = "🏆 Victory"
-            headline = f"{self.state.enemy_name.capitalize()} goes down clean."
-            colour = SPIDEY_GREEN
-        else:
-            result_label = "🏃 Retreated"
-            headline = f"{self.state.enemy_name.capitalize()} is still standing — you disengage."
-            colour = SPIDEY_RED
-
-        tier = "Gold" if self.state.outcome_key == "crime_gold" else "Bronze"
-        embed = base_embed(f"Patrol Battle — {tier} — Over", headline, colour=colour)
-        embed.add_field(name="Result", value=result_label, inline=False)
-        embed.add_field(name="Reputation XP", value=f"+{report.xp_gained}")
-        if report.cash_gained:
-            embed.add_field(name="Cash", value=f"+${report.cash_gained:,}")
-        embed.add_field(name="Suit Damage", value=f"-{report.suit_damage}%")
-
-        if report.photo_banked:
-            caught = "Camera broke mid-shot!" if report.camera_broke else "Photo saved for the Bugle."
-            embed.add_field(name=f"{report.photo_quality.title()} Photo Op", value=caught)
-
-        if report.unprotected_penalty:
-            embed.add_field(
-                name="🧵 Homemade Suit",
-                value=(
-                    f"{random.choice(UNPROTECTED_FLAVOR)} No plating, no reinforcement — "
-                    f"it cost you: -${report.unprotected_penalty:,}"
-                ),
-                inline=False,
-            )
-        if report.item_found:
-            embed.add_field(name="Scavenged", value=report.item_found.replace("_", " ").title())
-        if report.gadgets_broken:
-            embed.add_field(
-                name="Gadget Broke",
-                value=f"{', '.join(report.gadgets_broken)} took too much punishment and gave out. Check /shop.",
-                inline=False,
-            )
-        if report.donation_flavor:
-            embed.add_field(
-                name="City Thanks You", value=f"{report.donation_flavor} (+${report.donation_cash:,})", inline=False
-            )
-        if report.hazard_flavor:
-            embed.add_field(
-                name="Parker Luck", value=f"{report.hazard_flavor} (${report.hazard_cash:,})", inline=False
-            )
-        return embed
+        self.message: discord.Message | None = None
+        self._render(banner=intro_banner)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
             await interaction.response.send_message("This isn't your fight.", ephemeral=True)
             return False
         return True
+
+    def _tier(self) -> tuple[str, str]:
+        return ("Gold", "🥇") if self.state.outcome_key == "crime_gold" else ("Bronze", "🥉")
+
+    def _render(self, banner: str | None = None) -> None:
+        """Round-in-progress card: live HP/suit meters, the last few log lines under a
+        large-spacing divider (visually splitting 'what's true right now' from 'what
+        just happened'), and a real ActionRow — no embed involved at all."""
+        self.clear_items()
+        tier, tier_emoji = self._tier()
+        round_num = min(self.state.round_number, self.state.max_rounds)
+
+        container = discord.ui.Container()
+        header_text = f"# Patrol Battle — Round {round_num}/{self.state.max_rounds}"
+        if banner:
+            header_text += f"\n{banner}"
+        container.add_section(
+            discord.ui.TextDisplay(header_text),
+            accessory=discord.ui.Button(
+                label=f"{tier_emoji} {tier}",
+                style=discord.ButtonStyle.success if tier == "Gold" else discord.ButtonStyle.secondary,
+                disabled=True,
+            ),
+        )
+        container.add_separator()
+
+        container.add_text(
+            f"**{_cap(self.state.enemy_name)}**\n"
+            f"{_bar(self.state.enemy_hp, self.state.enemy_max_hp, '🟥')}  "
+            f"{self.state.enemy_hp}/{self.state.enemy_max_hp} HP"
+        )
+        container.add_separator(divider=False)
+        container.add_text(
+            f"**Your Suit**\n{_bar(self.state.suit_remaining, 100, '🟩')}  {self.state.suit_remaining}%"
+        )
+
+        if self.state.combo_ready:
+            container.add_separator(divider=False)
+            container.add_text("⚡ **Combo Ready** — next Attack is a guaranteed hit for bonus damage.")
+
+        if self.state.log:
+            container.add_separator(spacing=discord.SeparatorSpacingSize.large)
+            log_lines = "\n".join(f"• {line.strip()}" for line in self.state.log[-3:])
+            container.add_text(f"-# BATTLE LOG\n{log_lines}")
+
+        container.add_separator()
+        container.add_row(
+            AttackButton(self, disabled=False),
+            EvadeButton(self, disabled=False),
+            *(
+                GadgetActionButton(key, name, self, disabled=key in self.state.broken_gadget_keys)
+                for key, name in self.state.available_gadgets
+            ),
+        )
+        if not self.state.available_gadgets:
+            container.add_separator()
+            container.add_text("-# No gadgets equipped this fight.")
+
+        self.add_item(container)
+
+    def _render_final(self, report: BattleReport, suit_warning: str | None, timed_out: bool = False) -> None:
+        self.clear_items()
+        tier, _ = self._tier()
+
+        if timed_out:
+            result_label = "⏱️ Timed Out"
+            headline = "You hesitate too long and the moment passes."
+            badge_style = discord.ButtonStyle.secondary
+        elif report.won_clean:
+            result_label = "🏆 Victory"
+            headline = f"{_cap(self.state.enemy_name)} goes down clean."
+            badge_style = discord.ButtonStyle.success
+        else:
+            result_label = "🏃 Retreated"
+            headline = f"{_cap(self.state.enemy_name)} is still standing — you disengage."
+            badge_style = discord.ButtonStyle.danger
+
+        container = discord.ui.Container()
+        container.add_section(
+            discord.ui.TextDisplay(f"# Patrol Battle — {tier} — Over\n{headline}"),
+            accessory=discord.ui.Button(label=result_label, style=badge_style, disabled=True),
+        )
+
+        outcome_fields = [("Reputation XP", f"+{report.xp_gained}")]
+        if report.cash_gained:
+            outcome_fields.append(("Cash", f"+${report.cash_gained:,}"))
+        outcome_fields.append(("Suit Damage", f"-{report.suit_damage}%"))
+        field_groups = [("Outcome", outcome_fields)]
+
+        if report.photo_banked:
+            caught = "Camera broke mid-shot!" if report.camera_broke else "Photo saved for the Bugle."
+            field_groups.append((f"{report.photo_quality.title()} Photo Op", [("", caught)]))
+
+        if report.unprotected_penalty:
+            value = (
+                f"{random.choice(UNPROTECTED_FLAVOR)} No plating, no reinforcement — "
+                f"it cost you: -${report.unprotected_penalty:,}"
+            )
+            field_groups.append(("🧵 Homemade Suit", [("", value)]))
+
+        if report.item_found:
+            field_groups.append(("Scavenged", [("", report.item_found.replace("_", " ").title())]))
+
+        if report.gadgets_broken:
+            value = f"{', '.join(report.gadgets_broken)} took too much punishment and gave out. Check /shop."
+            field_groups.append(("Gadget Broke", [("", value)]))
+
+        if report.donation_flavor:
+            field_groups.append(("City Thanks You", [("", f"{report.donation_flavor} (+${report.donation_cash:,})")]))
+
+        if report.hazard_flavor:
+            field_groups.append(("Parker Luck", [("", f"{report.hazard_flavor} (${report.hazard_cash:,})")]))
+
+        if suit_warning:
+            field_groups.append(("⚠️ Suit Warning", [("", suit_warning)]))
+
+        add_field_groups(container, field_groups)
+        self.add_item(container)
 
     async def _advance(self, interaction: discord.Interaction, line: str) -> None:
         self.state.log.append(line)
@@ -164,8 +237,8 @@ class PatrolBattleView(discord.ui.View):
             self.state.round_number += 1
 
         if not self.state.ended:
-            self._sync_buttons()
-            await interaction.response.edit_message(embed=self.render(), view=self)
+            self._render()
+            await interaction.response.edit_message(view=self)
             return
 
         async with async_session() as session:
@@ -175,19 +248,8 @@ class PatrolBattleView(discord.ui.View):
             suit_warning = await repair_readiness_warning(session, user)
 
         self.stop()
-        self._sync_buttons()
-        embed = self._final_embed(report)
-        if suit_warning:
-            embed.add_field(name="⚠️ Suit Warning", value=suit_warning, inline=False)
-        await interaction.response.edit_message(embed=embed, view=self)
-
-    @discord.ui.button(label="⚡ Attack", style=discord.ButtonStyle.danger)
-    async def attack_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        await self._advance(interaction, resolve_attack(self.state))
-
-    @discord.ui.button(label="🛡️ Evade", style=discord.ButtonStyle.primary)
-    async def evade_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        await self._advance(interaction, resolve_evade(self.state))
+        self._render_final(report, suit_warning)
+        await interaction.response.edit_message(view=self)
 
     async def on_timeout(self) -> None:
         if self.state.ended:
@@ -200,42 +262,38 @@ class PatrolBattleView(discord.ui.View):
             report = await finalize_battle(session, user, self.state)
             await set_cooldown(session, self.author_id, "patrol", PATROL_COOLDOWN_SECONDS)
 
-        self._sync_buttons()
+        self._render_final(report, suit_warning=None, timed_out=True)
         if self.message is not None:
             try:
-                await self.message.edit(embed=self._final_embed(report, timed_out=True), view=self)
+                await self.message.edit(view=self)
             except discord.HTTPException:
                 pass
 
 
-def _noncombat_embed(result: PatrolResult, suit_warning: str | None) -> discord.Embed:
-    embed = base_embed("Patrol Report", result.flavor)
-
+def _noncombat_view(result: PatrolResult, suit_warning: str | None) -> StaticView:
+    fields = []
     if result.web_fluid_used:
-        embed.add_field(name="Web Fluid", value="-1 vial")
+        fields.append(("Web Fluid", "-1 vial"))
     else:
-        embed.add_field(
-            name="Web Fluid",
-            value=f"Out of vials — improvised with store-bought fluid: -${result.web_fluid_tax:,}. "
+        fields.append((
+            "Web Fluid",
+            f"Out of vials — improvised with store-bought fluid: -${result.web_fluid_tax:,}. "
             f"Brew more with /lab brew.",
-            inline=False,
-        )
+        ))
 
     xp_note = " (thriving allies bonus)" if result.ally_xp_bonus else ""
-    embed.add_field(name="Reputation XP", value=f"+{result.xp_gained}{xp_note}")
+    fields.append(("Reputation XP", f"+{result.xp_gained}{xp_note}"))
 
     if result.cash_gained:
-        embed.add_field(name="Cash", value=f"+${result.cash_gained:,}")
+        fields.append(("Cash", f"+${result.cash_gained:,}"))
 
+    field_groups = [(None, fields)]
     if result.hazard_flavor:
-        embed.add_field(
-            name="Parker Luck", value=f"{result.hazard_flavor} (${result.hazard_cash:,})", inline=False
-        )
-
+        field_groups.append(("Parker Luck", [("", f"{result.hazard_flavor} (${result.hazard_cash:,})")]))
     if suit_warning:
-        embed.add_field(name="⚠️ Suit Warning", value=suit_warning, inline=False)
+        field_groups.append(("⚠️ Suit Warning", [("", suit_warning)]))
 
-    return embed
+    return StaticView("Patrol Report", result.flavor, field_groups=field_groups)
 
 
 class PatrolCog(commands.Cog):
@@ -276,7 +334,7 @@ class PatrolCog(commands.Cog):
                 result = await finish_noncombat_patrol(session, user, start)
                 await set_cooldown(session, user.discord_id, "patrol", PATROL_COOLDOWN_SECONDS)
                 suit_warning = await repair_readiness_warning(session, user)
-                await ctx.respond(embed=_noncombat_embed(result, suit_warning))
+                await ctx.respond(view=_noncombat_view(result, suit_warning))
                 return
 
             # Crime encounter — lock /patrol for the whole possible battle window so a
@@ -299,9 +357,9 @@ class PatrolCog(commands.Cog):
                 available_gadgets=available_gadgets,
             )
 
-        view = PatrolBattleView(state, ctx.author.id)
         fluid_note = "" if start.web_fluid_used else f" (out of Web-Fluid — cost you ${start.web_fluid_tax:,})"
-        await ctx.respond(embed=view.render(f"{start.flavor}{fluid_note}"), view=view)
+        view = PatrolBattleView(state, ctx.author.id, intro_banner=f"{start.flavor}{fluid_note}")
+        await ctx.respond(view=view)
         view.message = await ctx.interaction.original_response()
 
 

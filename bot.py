@@ -34,6 +34,7 @@ EXTENSIONS = [
     "cogs.market_cog",
     "cogs.ally_cog",
     "cogs.lab_cog",
+    "cogs.leaderboard_cog",
     "cogs.scheduler_cog",
     "cogs.help_cog",
     "cogs.admin_cog",

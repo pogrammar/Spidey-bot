@@ -1,3 +1,5 @@
+import random
+
 import discord
 from discord import Option
 from discord.ext import commands
@@ -6,7 +8,8 @@ from db.base import async_session
 from db.models import Item
 from services.economy import get_or_create_user
 from services.shop_service import buy_item, list_shop_items
-from utils.embeds import SPIDEY_BLUE, base_embed, error_embed
+from utils.embeds import error_embed
+from utils.v2_embeds import StaticView, add_field_groups
 
 # Section grouping for /shop browse. Keeps the dropdown small and scannable instead
 # of dumping every item — tools, gifts, and gadgets — into one long list.
@@ -14,6 +17,13 @@ SHOP_SECTIONS = [
     ("🛠️ Gear", ("tool", "component")),
     ("🎁 Gifts", ("gift",)),
     ("🦾 Gadgets", ("gadget",)),
+]
+
+SHOP_FOOTERS = [
+    "The guy behind the counter has seen weirder purchases.",
+    "No receipts. No refunds. No questions about the web fluid stains.",
+    "Retail therapy, hero edition.",
+    "Somewhere, a shopkeeper is not asking why you need this.",
 ]
 
 
@@ -38,7 +48,68 @@ async def shop_item_autocomplete(ctx: discord.AutocompleteContext) -> list[disco
     return choices[:25]
 
 
-class ShopBrowseView(discord.ui.View):
+def _shop_options(items: list[Item], selected_key: str | None) -> list[discord.SelectOption]:
+    return [
+        discord.SelectOption(
+            label=f"{item.name} — ${item.price:,}",
+            value=item.key,
+            description=(item.description[:100] if item.description else None),
+            default=(item.key == selected_key),
+        )
+        for item in items
+    ]
+
+
+class PrevSectionButton(discord.ui.Button):
+    def __init__(self, panel: "ShopBrowseView", *, disabled: bool):
+        super().__init__(label="Previous", emoji="◀", style=discord.ButtonStyle.secondary, disabled=disabled)
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        self.panel.section_index -= 1
+        self.panel.selected_key = None
+        self.panel._render()
+        await interaction.response.edit_message(view=self.panel)
+
+
+class NextSectionButton(discord.ui.Button):
+    def __init__(self, panel: "ShopBrowseView", *, disabled: bool):
+        super().__init__(label="Next", emoji="▶", style=discord.ButtonStyle.secondary, disabled=disabled)
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        self.panel.section_index += 1
+        self.panel.selected_key = None
+        self.panel._render()
+        await interaction.response.edit_message(view=self.panel)
+
+
+class ShopItemSelect(discord.ui.Select):
+    def __init__(self, panel: "ShopBrowseView", label: str, options: list[discord.SelectOption]):
+        super().__init__(placeholder=f"Choose an item in {label}...", options=options)
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        self.panel.selected_key = self.values[0]
+        self.panel._render()
+        await interaction.response.edit_message(view=self.panel)
+
+
+class BuyButton(discord.ui.Button):
+    def __init__(self, panel: "ShopBrowseView", *, item: Item | None):
+        label = f"Buy for ${item.price:,}" if item else "Buy"
+        super().__init__(label=label, emoji="🛒", style=discord.ButtonStyle.success, disabled=item is None)
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        async with async_session() as session:
+            user = await get_or_create_user(session, interaction.user.id)
+            ok, message = await buy_item(session, user, self.panel.selected_key)
+        self.panel._render(banner=message)
+        await interaction.response.edit_message(view=self.panel)
+
+
+class ShopBrowseView(discord.ui.DesignerView):
     """Prev/Next buttons flip between category sections (Gear / Gifts / Gadgets), each
     with its own small dropdown + Buy button — easier to scan than one long list."""
 
@@ -47,34 +118,9 @@ class ShopBrowseView(discord.ui.View):
         self.sections = sections
         self.author_id = author_id
         self.section_index = 0
-        self.items_by_key: dict[str, Item] = {}
         self.selected_key: str | None = None
-        self._sync_section()
-
-    def _sync_section(self) -> None:
-        name, items = self.sections[self.section_index]
-        self.items_by_key = {item.key: item for item in items}
-        self.selected_key = None
-
-        self.item_select.placeholder = f"Choose an item in {name}..."
-        self.item_select.options = [
-            discord.SelectOption(
-                label=f"{item.name} — ${item.price:,}",
-                value=item.key,
-                description=(item.description[:100] if item.description else None),
-            )
-            for item in items
-        ]
-
-        self.buy_button.disabled = True
-        self.buy_button.label = "Buy"
-        self.previous_section.disabled = self.section_index == 0
-        self.next_section.disabled = self.section_index == len(self.sections) - 1
-        self.section_label.label = f"{name} ({self.section_index + 1}/{len(self.sections)})"
-
-    def _section_embed(self, banner: str | None = None) -> discord.Embed:
-        name, _ = self.sections[self.section_index]
-        return base_embed(f"General Store — {name}", banner or "Pick something from the dropdown below.", colour=SPIDEY_BLUE)
+        self.message: discord.Message | None = None
+        self._render()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
@@ -83,48 +129,55 @@ class ShopBrowseView(discord.ui.View):
         return True
 
     async def on_timeout(self) -> None:
-        for item in self.children:
-            item.disabled = True
+        if self.children:
+            self.children[0].disable_all_items()
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
 
-    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary, row=0)
-    async def previous_section(self, button: discord.ui.Button, interaction: discord.Interaction):
-        self.section_index -= 1
-        self._sync_section()
-        await interaction.response.edit_message(embed=self._section_embed(), view=self)
+    def _selected_item(self, items: list[Item]) -> Item | None:
+        return next((i for i in items if i.key == self.selected_key), None)
 
-    @discord.ui.button(label="Section 1/1", style=discord.ButtonStyle.secondary, disabled=True, row=0)
-    async def section_label(self, button: discord.ui.Button, interaction: discord.Interaction):
-        pass  # display only
+    def _render(self, banner: str | None = None) -> None:
+        self.clear_items()
+        label, items = self.sections[self.section_index]
+        item = self._selected_item(items)
 
-    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary, row=0)
-    async def next_section(self, button: discord.ui.Button, interaction: discord.Interaction):
-        self.section_index += 1
-        self._sync_section()
-        await interaction.response.edit_message(embed=self._section_embed(), view=self)
+        container = discord.ui.Container()
+        title = item.name if item else f"General Store — {label}"
+        if banner:
+            body = banner
+        elif item is not None:
+            body = item.description or ""
+        else:
+            body = "Pick something from the dropdown below."
+        header_text = f"# {title}"
+        if body:
+            header_text += f"\n{body}"
+        container.add_section(
+            discord.ui.TextDisplay(header_text),
+            accessory=discord.ui.Button(
+                label=f"{self.section_index + 1}/{len(self.sections)}",
+                style=discord.ButtonStyle.secondary,
+                disabled=True,
+            ),
+        )
 
-    @discord.ui.select(placeholder="Choose an item...", row=1)
-    async def item_select(self, select: discord.ui.Select, interaction: discord.Interaction):
-        self.selected_key = select.values[0]
-        item = self.items_by_key[self.selected_key]
+        if item is not None:
+            add_field_groups(container, [(None, [("Price", f"${item.price:,}")])])
+        else:
+            container.add_separator()
 
-        embed = self._section_embed()
-        embed.add_field(name=item.name, value=item.description or "", inline=False)
-        embed.add_field(name="Price", value=f"${item.price:,}")
+        container.add_row(
+            PrevSectionButton(self, disabled=self.section_index == 0),
+            NextSectionButton(self, disabled=self.section_index == len(self.sections) - 1),
+        )
+        container.add_row(ShopItemSelect(self, label, _shop_options(items, self.selected_key)))
+        container.add_row(BuyButton(self, item=item))
 
-        self.buy_button.disabled = False
-        self.buy_button.label = f"Buy for ${item.price:,}"
-        await interaction.response.edit_message(embed=embed, view=self)
-
-    @discord.ui.button(label="Buy", style=discord.ButtonStyle.success, disabled=True, row=2)
-    async def buy_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        if self.selected_key is None:
-            return
-        async with async_session() as session:
-            user = await get_or_create_user(session, interaction.user.id)
-            ok, message = await buy_item(session, user, self.selected_key)
-
-        embed = self._section_embed(banner=message) if ok else error_embed(message)
-        await interaction.response.edit_message(embed=embed, view=self)
+        self.add_item(container)
 
 
 class ShopCog(commands.Cog):
@@ -139,17 +192,19 @@ class ShopCog(commands.Cog):
             user = await get_or_create_user(session, ctx.author.id)
             items = await list_shop_items(session)
 
-        embed = base_embed("General Store", colour=SPIDEY_BLUE)
-        for item in items:
+        def item_field(item: Item) -> tuple[str, str]:
             if _is_locked(item, user.reputation_level):
-                embed.add_field(
-                    name=item.name,
-                    value=f"🔒 (gadget not unlocked — needs reputation level {item.unlock_level})",
-                    inline=False,
-                )
-            else:
-                embed.add_field(name=f"{item.name} — ${item.price:,}", value=item.description, inline=False)
-        await ctx.respond(embed=embed)
+                return (item.name, f"🔒 (gadget not unlocked — needs reputation level {item.unlock_level})")
+            return (f"{item.name} — ${item.price:,}", item.description)
+
+        field_groups = []
+        for label, categories in SHOP_SECTIONS:
+            section_items = [item for item in items if item.category in categories]
+            if section_items:
+                field_groups.append((label, [item_field(item) for item in section_items]))
+
+        view = StaticView("General Store", field_groups=field_groups, footer_lines=[random.choice(SHOP_FOOTERS)])
+        await ctx.respond(view=view)
 
     @shop.command(name="browse", description="Browse the store section by section and buy with one click.")
     async def browse(self, ctx: discord.ApplicationContext):
@@ -169,7 +224,8 @@ class ShopCog(commands.Cog):
                 sections.append((label, section_items))
 
         view = ShopBrowseView(sections, ctx.author.id)
-        await ctx.respond(embed=view._section_embed(), view=view)
+        await ctx.respond(view=view)
+        view.message = await ctx.interaction.original_response()
 
     @shop.command(name="buy", description="Buy an item from the store.")
     async def buy(
@@ -180,7 +236,11 @@ class ShopCog(commands.Cog):
         async with async_session() as session:
             user = await get_or_create_user(session, ctx.author.id)
             ok, message = await buy_item(session, user, item)
-        await ctx.respond(embed=base_embed("General Store", message) if ok else error_embed(message))
+        if ok:
+            view = StaticView("General Store", description=message, footer_lines=[random.choice(SHOP_FOOTERS)])
+            await ctx.respond(view=view)
+        else:
+            await ctx.respond(embed=error_embed(message))
 
 
 def setup(bot: discord.Bot):

@@ -1,3 +1,5 @@
+import random
+
 import discord
 from discord import Option
 from discord.ext import commands
@@ -13,7 +15,15 @@ from services.gadget_service import (
     unequip_gadget,
     upgrade_gadget,
 )
-from utils.embeds import SPIDEY_BLUE, base_embed, error_embed
+from utils.embeds import error_embed
+from utils.v2_embeds import StaticView, add_field_groups
+
+GADGET_FOOTERS = [
+    "Every gadget here started as a Stark-wannabe napkin sketch.",
+    "Held together with web fluid and blind optimism.",
+    "Tony Stark would have opinions about this workmanship.",
+    "Field-tested. Mostly by accident.",
+]
 
 
 async def owned_gadget_autocomplete(ctx: discord.AutocompleteContext) -> list[discord.OptionChoice]:
@@ -65,7 +75,62 @@ def _dedupe_options(views: list[OwnedGadgetView], selected_key: str | None) -> l
     return options
 
 
-class GadgetPanelView(discord.ui.View):
+class GadgetSelect(discord.ui.Select):
+    def __init__(self, panel: "GadgetPanelView", options: list[discord.SelectOption]):
+        super().__init__(placeholder="Choose a gadget you own...", options=options)
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        self.panel.selected_key = self.values[0]
+        async with async_session() as session:
+            views = await list_owned_gadget_views(session, self.panel.author_id)
+        self.panel._render(views)
+        await interaction.response.edit_message(view=self.panel)
+
+
+class EquipButton(discord.ui.Button):
+    def __init__(self, panel: "GadgetPanelView", *, disabled: bool):
+        super().__init__(label="Equip", emoji="✅", style=discord.ButtonStyle.primary, disabled=disabled)
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        async with async_session() as session:
+            user = await get_or_create_user(session, interaction.user.id)
+            _, message = await equip_gadget(session, user, self.panel.selected_key)
+            views = await list_owned_gadget_views(session, self.panel.author_id)
+        self.panel._render(views, banner=message)
+        await interaction.response.edit_message(view=self.panel)
+
+
+class UnequipButton(discord.ui.Button):
+    def __init__(self, panel: "GadgetPanelView", *, disabled: bool):
+        super().__init__(label="Unequip", emoji="➖", style=discord.ButtonStyle.secondary, disabled=disabled)
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        async with async_session() as session:
+            user = await get_or_create_user(session, interaction.user.id)
+            _, message = await unequip_gadget(session, user, self.panel.selected_key)
+            views = await list_owned_gadget_views(session, self.panel.author_id)
+        self.panel._render(views, banner=message)
+        await interaction.response.edit_message(view=self.panel)
+
+
+class UpgradeButton(discord.ui.Button):
+    def __init__(self, panel: "GadgetPanelView", *, disabled: bool):
+        super().__init__(label="Upgrade", emoji="⬆️", style=discord.ButtonStyle.success, disabled=disabled)
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        async with async_session() as session:
+            user = await get_or_create_user(session, interaction.user.id)
+            _, message = await upgrade_gadget(session, user, self.panel.selected_key)
+            views = await list_owned_gadget_views(session, self.panel.author_id)
+        self.panel._render(views, banner=message)
+        await interaction.response.edit_message(view=self.panel)
+
+
+class GadgetPanelView(discord.ui.DesignerView):
     """Dropdown of owned gadgets + Equip/Unequip/Upgrade buttons, refreshing in place
     after each action so the panel always reflects your current loadout."""
 
@@ -73,7 +138,8 @@ class GadgetPanelView(discord.ui.View):
         super().__init__(timeout=timeout)
         self.author_id = author_id
         self.selected_key: str | None = None
-        self.gadget_select.options = _dedupe_options(views, None)
+        self.message: discord.Message | None = None
+        self._render(views)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
@@ -82,8 +148,13 @@ class GadgetPanelView(discord.ui.View):
         return True
 
     async def on_timeout(self) -> None:
-        for item in self.children:
-            item.disabled = True
+        if self.children:
+            self.children[0].disable_all_items()
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
 
     def _best_copy(self, views: list[OwnedGadgetView], key: str) -> OwnedGadgetView | None:
         for view in views:
@@ -91,59 +162,44 @@ class GadgetPanelView(discord.ui.View):
                 return view
         return None
 
-    async def _render(self, session, interaction: discord.Interaction, banner: str | None = None) -> None:
-        views = await list_owned_gadget_views(session, self.author_id)
-        self.gadget_select.options = _dedupe_options(views, self.selected_key)
-
+    def _render(self, views: list[OwnedGadgetView], banner: str | None = None) -> None:
+        self.clear_items()
         best = self._best_copy(views, self.selected_key) if self.selected_key else None
-        if best is None:
-            embed = base_embed("Your Gadgets", banner or "Pick a gadget from the dropdown.", colour=SPIDEY_BLUE)
-            self.equip_button.disabled = True
-            self.unequip_button.disabled = True
-            self.upgrade_button.disabled = True
+        equipped_count = sum(1 for v in views if v.equipped)
+
+        container = discord.ui.Container()
+        title = best.name if best else "Your Gadgets"
+        body = banner or ("Pick a gadget from the dropdown." if best is None else "")
+        header_text = f"# {title}"
+        if body:
+            header_text += f"\n{body}"
+        container.add_section(
+            discord.ui.TextDisplay(header_text),
+            accessory=discord.ui.Button(
+                label=f"{equipped_count}/{MAX_EQUIPPED_GADGETS} Equipped",
+                style=discord.ButtonStyle.success if equipped_count == MAX_EQUIPPED_GADGETS else discord.ButtonStyle.secondary,
+                disabled=True,
+            ),
+        )
+
+        if best is not None:
+            stat_fields = [
+                ("Durability", f"{best.durability}%" if best.durability is not None else "—"),
+                ("Upgrade Level", f"{best.upgrade_level}/{MAX_UPGRADE_LEVEL}"),
+                ("Equipped", "Yes" if best.equipped else "No"),
+            ]
+            add_field_groups(container, [(None, stat_fields)])
         else:
-            embed = base_embed(best.name, banner or "", colour=SPIDEY_BLUE)
-            embed.add_field(name="Durability", value=f"{best.durability}%")
-            embed.add_field(name="Upgrade Level", value=f"{best.upgrade_level}/{MAX_UPGRADE_LEVEL}")
-            embed.add_field(name="Equipped", value="Yes" if best.equipped else "No")
-            self.equip_button.disabled = best.equipped
-            self.unequip_button.disabled = not best.equipped
-            self.upgrade_button.disabled = not best.equipped or best.upgrade_level >= MAX_UPGRADE_LEVEL
+            container.add_separator()
 
-        await interaction.response.edit_message(embed=embed, view=self)
+        container.add_row(GadgetSelect(self, _dedupe_options(views, self.selected_key)))
+        container.add_row(
+            EquipButton(self, disabled=best is None or best.equipped),
+            UnequipButton(self, disabled=best is None or not best.equipped),
+            UpgradeButton(self, disabled=best is None or not best.equipped or best.upgrade_level >= MAX_UPGRADE_LEVEL),
+        )
 
-    @discord.ui.select(placeholder="Choose a gadget you own...")
-    async def gadget_select(self, select: discord.ui.Select, interaction: discord.Interaction):
-        self.selected_key = select.values[0]
-        async with async_session() as session:
-            await self._render(session, interaction)
-
-    @discord.ui.button(label="Equip", style=discord.ButtonStyle.primary, disabled=True)
-    async def equip_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        if self.selected_key is None:
-            return
-        async with async_session() as session:
-            user = await get_or_create_user(session, interaction.user.id)
-            _, message = await equip_gadget(session, user, self.selected_key)
-            await self._render(session, interaction, banner=message)
-
-    @discord.ui.button(label="Unequip", style=discord.ButtonStyle.secondary, disabled=True)
-    async def unequip_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        if self.selected_key is None:
-            return
-        async with async_session() as session:
-            user = await get_or_create_user(session, interaction.user.id)
-            _, message = await unequip_gadget(session, user, self.selected_key)
-            await self._render(session, interaction, banner=message)
-
-    @discord.ui.button(label="Upgrade", style=discord.ButtonStyle.success, disabled=True)
-    async def upgrade_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-        if self.selected_key is None:
-            return
-        async with async_session() as session:
-            user = await get_or_create_user(session, interaction.user.id)
-            _, message = await upgrade_gadget(session, user, self.selected_key)
-            await self._render(session, interaction, banner=message)
+        self.add_item(container)
 
 
 class GadgetCog(commands.Cog):
@@ -163,16 +219,30 @@ class GadgetCog(commands.Cog):
             )
             return
 
-        embed = base_embed("Your Gadgets", colour=SPIDEY_BLUE)
+        equipped_fields = []
+        stored_fields = []
         for view in views:
-            equipped_note = " — **equipped**" if view.equipped else ""
-            embed.add_field(
-                name=view.name,
-                value=f"{view.durability}% durability, upgrade level {view.upgrade_level}/{MAX_UPGRADE_LEVEL}{equipped_note}",
-                inline=False,
+            entry = (
+                view.name,
+                f"{view.durability}% durability, upgrade level {view.upgrade_level}/{MAX_UPGRADE_LEVEL}",
             )
-        embed.set_footer(text=f"You can have up to {MAX_EQUIPPED_GADGETS} equipped at once.")
-        await ctx.respond(embed=embed)
+            (equipped_fields if view.equipped else stored_fields).append(entry)
+
+        field_groups = []
+        if equipped_fields:
+            field_groups.append(("Equipped", equipped_fields))
+        if stored_fields:
+            field_groups.append(("In Storage", stored_fields))
+
+        v2_view = StaticView(
+            "Your Gadgets",
+            field_groups=field_groups,
+            footer_lines=[
+                f"You can have up to {MAX_EQUIPPED_GADGETS} equipped at once.",
+                random.choice(GADGET_FOOTERS),
+            ],
+        )
+        await ctx.respond(view=v2_view)
 
     @gadget.command(name="panel", description="Interactive gadget menu — pick, equip, upgrade.")
     async def panel(self, ctx: discord.ApplicationContext):
@@ -186,8 +256,8 @@ class GadgetCog(commands.Cog):
             return
 
         view = GadgetPanelView(views, ctx.author.id)
-        embed = base_embed("Your Gadgets", "Pick a gadget from the dropdown.", colour=SPIDEY_BLUE)
-        await ctx.respond(embed=embed, view=view)
+        await ctx.respond(view=view)
+        view.message = await ctx.interaction.original_response()
 
     @gadget.command(name="equip", description="Equip a gadget you own.")
     async def equip(
@@ -198,7 +268,10 @@ class GadgetCog(commands.Cog):
         async with async_session() as session:
             user = await get_or_create_user(session, ctx.author.id)
             ok, message = await equip_gadget(session, user, gadget)
-        await ctx.respond(embed=base_embed("Gadgets", message) if ok else error_embed(message))
+        if ok:
+            await ctx.respond(view=StaticView("Gadgets", description=message, footer_lines=[random.choice(GADGET_FOOTERS)]))
+        else:
+            await ctx.respond(embed=error_embed(message))
 
     @gadget.command(name="unequip", description="Unequip a gadget to free up a loadout slot.")
     async def unequip(
@@ -209,7 +282,10 @@ class GadgetCog(commands.Cog):
         async with async_session() as session:
             user = await get_or_create_user(session, ctx.author.id)
             ok, message = await unequip_gadget(session, user, gadget)
-        await ctx.respond(embed=base_embed("Gadgets", message) if ok else error_embed(message))
+        if ok:
+            await ctx.respond(view=StaticView("Gadgets", description=message, footer_lines=[random.choice(GADGET_FOOTERS)]))
+        else:
+            await ctx.respond(embed=error_embed(message))
 
     @gadget.command(name="upgrade", description="Spend cash to upgrade one of your equipped gadgets.")
     async def upgrade(
@@ -220,7 +296,10 @@ class GadgetCog(commands.Cog):
         async with async_session() as session:
             user = await get_or_create_user(session, ctx.author.id)
             ok, message = await upgrade_gadget(session, user, gadget)
-        await ctx.respond(embed=base_embed("Gadgets", message) if ok else error_embed(message))
+        if ok:
+            await ctx.respond(view=StaticView("Gadgets", description=message, footer_lines=[random.choice(GADGET_FOOTERS)]))
+        else:
+            await ctx.respond(embed=error_embed(message))
 
 
 def setup(bot: discord.Bot):

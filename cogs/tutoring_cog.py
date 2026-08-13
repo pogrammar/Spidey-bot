@@ -1,3 +1,5 @@
+import random
+
 import discord
 from discord.ext import commands
 
@@ -6,7 +8,15 @@ from services.busy import get_busy, set_busy
 from services.cooldowns import format_remaining, get_remaining_seconds, set_cooldown
 from services.economy import get_or_create_user
 from services.tutoring_service import TUTORING_LOCK_SECONDS, run_tutoring_session
-from utils.embeds import base_embed, error_embed
+from utils.embeds import error_embed
+from utils.v2_embeds import StaticView
+
+TUTORING_FOOTERS = [
+    "Calculus doesn't stop just because the city needs you.",
+    "Somewhere a student is failing because of you. Worth it.",
+    "Peter Parker: genius by day, questionable life choices by night.",
+    "ESU tuition isn't going to pay itself.",
+]
 
 
 class TutoringCog(commands.Cog):
@@ -42,32 +52,36 @@ class TutoringCog(commands.Cog):
             await set_cooldown(session, user.discord_id, "tutoring", TUTORING_LOCK_SECONDS)
             await set_busy(session, user.discord_id, "tutoring", TUTORING_LOCK_SECONDS)
 
-        embed = base_embed(
-            "Tutoring Session",
-            "You duck into a study room and drill calculus into someone who'd rather be anywhere else.",
-        )
         cash_note = " (neglected ally penalty)" if result.ally_earnings_penalty else ""
         xp_note = " (thriving allies bonus)" if result.ally_xp_bonus else ""
-        embed.add_field(name="Cash", value=f"+${result.cash:,}{cash_note}")
-        embed.add_field(name="Reputation XP", value=f"+{result.xp}{xp_note}")
-        embed.add_field(
-            name="City Crime Level",
-            value=f"+{result.crime_rise} (now {result.new_crime_level}/100) — nobody's out there while you're stuck inside.",
-            inline=False,
-        )
-        if result.ally_earnings_penalty:
-            embed.add_field(
-                name="Distracted",
-                value="Someone in your life needs attention and it's costing you focus — check /ally check.",
-                inline=False,
+        earnings_fields = [
+            ("Cash", f"+${result.cash:,}{cash_note}"),
+            ("Reputation XP", f"+{result.xp}{xp_note}"),
+        ]
+        cost_fields = [
+            (
+                "City Crime Level",
+                f"+{result.crime_rise} (now {result.new_crime_level}/100) — nobody's out there while you're stuck inside.",
             )
+        ]
+        if result.ally_earnings_penalty:
+            cost_fields.append((
+                "Distracted",
+                "Someone in your life needs attention and it's costing you focus — check /ally check.",
+            ))
         if result.jam_flavor:
             value = result.jam_flavor
             if result.jam_handled:
                 value += f" (+${result.jam_cash:,})"
-            embed.add_field(name="Close Call", value=value, inline=False)
-        embed.set_footer(text="You can't /patrol again for 2 minutes.")
-        await ctx.respond(embed=embed)
+            cost_fields.append(("Close Call", value))
+
+        view = StaticView(
+            "Tutoring Session",
+            "You duck into a study room and drill calculus into someone who'd rather be anywhere else.",
+            field_groups=[("Earnings", earnings_fields), ("Cost", cost_fields)],
+            footer_lines=["You can't /patrol again for 2 minutes.", random.choice(TUTORING_FOOTERS)],
+        )
+        await ctx.respond(view=view)
 
 
 def setup(bot: discord.Bot):

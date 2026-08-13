@@ -1,3 +1,5 @@
+import random
+
 import discord
 from discord import Option
 from discord.ext import commands
@@ -11,7 +13,15 @@ from services.shakedown_service import (
     TARGET_PROTECTION_SECONDS,
     attempt_shakedown,
 )
-from utils.embeds import base_embed, error_embed
+from utils.embeds import error_embed
+from utils.v2_embeds import StaticView
+
+SHAKEDOWN_FOOTERS = [
+    "Not exactly hero material, but the rent's due.",
+    "Parker Luck strikes again — this time in your favor.",
+    "Even Spider-Man needs a side hustle sometimes.",
+    "You'll feel bad about this later. Probably.",
+]
 
 
 class PvpCog(commands.Cog):
@@ -61,15 +71,17 @@ class PvpCog(commands.Cog):
             await set_cooldown(session, victim.discord_id, "shakedown_target", TARGET_PROTECTION_SECONDS)
 
         if result.success:
-            embed = base_embed(
-                "Shakedown — Success", f"You corner {target.display_name} in an alley and lighten their pockets."
+            view = StaticView(
+                "Shakedown — Success",
+                f"You corner {target.display_name} in an alley and lighten their pockets.",
+                fields=[("Cash Taken", f"${result.amount:,}")],
+                footer_lines=[random.choice(SHAKEDOWN_FOOTERS)],
             )
-            embed.add_field(name="Cash Taken", value=f"${result.amount:,}")
+            await ctx.respond(view=view)
         else:
             embed = error_embed(f"{target.display_name} fights back — or someone sees you. You bail, but not clean.")
             embed.add_field(name="Cash Lost", value=f"${result.amount:,}")
-
-        await ctx.respond(embed=embed)
+            await ctx.respond(embed=embed)
 
 
 def setup(bot: discord.Bot):
