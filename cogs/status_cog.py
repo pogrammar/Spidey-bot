@@ -12,7 +12,7 @@ STATUS_ROTATION_SECONDS = 60
 # activity types and gets the purple "live" badge, which reads as a lot less classic
 # than a plain online dot. Needs a syntactically valid stream URL or Discord won't
 # apply the streaming treatment, even though nothing's actually being streamed.
-STREAM_URL = "https://www.twitch.tv/spidey"
+STREAM_URL = "https://www.twitch.tv/betchespy"
 
 STATUS_LINES = [
     "hooky from Oscorp",
