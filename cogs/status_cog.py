@@ -1,29 +1,79 @@
 import itertools
+import random
 
 import discord
 from discord.ext import commands, tasks
 
 STATUS_ROTATION_SECONDS = 60
 
-# (activity, ) tuples — mixing types the way Dank Memer does (its own status sits on
-# Streaming) so the presence doesn't read as one flat "Playing X" line the whole time.
-STATUSES = [
-    discord.Streaming(name="/help — Peter", url="https://www.twitch.tv/spidey"),
-    discord.Activity(type=discord.ActivityType.watching, name="the police scanner"),
-    discord.Activity(type=discord.ActivityType.playing, name="/patrol"),
-    discord.Activity(type=discord.ActivityType.listening, name="J. Jonah Jameson yell"),
-    discord.Activity(type=discord.ActivityType.competing, name="the Bugle's front page"),
-    discord.Activity(type=discord.ActivityType.watching, name="your suit integrity drop"),
+# Streaming, not Watching/Listening/Competing — confirmed by live testing that those
+# newer Rich Presence types only render for bots inside the expanded profile view,
+# not inline in the member list. Streaming (like Playing) is one of the original
+# activity types and gets the purple "live" badge, which reads as a lot less classic
+# than a plain online dot. Needs a syntactically valid stream URL or Discord won't
+# apply the streaming treatment, even though nothing's actually being streamed.
+STREAM_URL = "https://www.twitch.tv/spidey"
+
+STATUS_LINES = [
+    "hooky from Oscorp",
+    "tag with the NYPD",
+    "hide and seek with the Sinister Six",
+    "chicken with a glider",
+    "catch with a city bus",
+    "20 questions with J. Jonah Jameson",
+    "keep-away with Doc Ock's arms",
+    "Jenga with the Chrysler Building",
+    "peekaboo with the Vulture",
+    "dodgeball with pumpkin bombs",
+    "tug-of-war with a web line",
+    "Uno with Deadpool (he's cheating)",
+    "hopscotch on bridge cables",
+    "whack-a-mole with Kingpin's goons",
+    "connect four with Electro",
+    "freeze tag with Mysterio's illusions",
+    "hide and seek (Kraven is it)",
+    "darts with Shocker (badly)",
+    "the quiet game with Venom",
+    "arm wrestling with Rhino (losing)",
+    "leapfrog over the Daily Bugle",
+    "chicken with rent day",
+    "budget hero on a sidekick's salary",
+    "landlord roulette",
+    "hooky from chemistry class",
+    "guess the villain from the headline",
+    "web fluid roulette (usually fine)",
+    "dress-up in a homemade suit",
+    "hide the black eye from Aunt May",
+    "phone tag with MJ",
+    "tourist photographer, technically",
+    "damage control, mostly on myself",
+    "extremely unpaid overtime",
+    "hooky from my responsibilities",
+    "chicken with a deadline and a villain",
+    "catch-up on 4 hours of sleep",
+    "keep the mask on straight",
+    "find the exact rent amount",
+    "good cop bad cop, badly, alone",
+    "tag, you're mugged",
+    "the world's worst internship",
+    "wall crawler, occasionally falling",
+    "hero for a city that reads the Bugle",
+    "dodge the wanted poster",
+    "who left this pumpkin bomb here",
+    "spot the difference, villain edition",
+    "web-slinger's cardio, unwillingly",
 ]
 
 
 class StatusCog(commands.Cog):
-    """Rotates the bot's presence through a themed status list, Dank Memer-style,
-    instead of sitting on one static 'Playing' line forever."""
+    """Rotates the bot's presence through a big themed status list. Shuffled once at
+    startup so restarts don't always begin on the same line."""
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
-        self._cycle = itertools.cycle(STATUSES)
+        shuffled = STATUS_LINES.copy()
+        random.shuffle(shuffled)
+        self._cycle = itertools.cycle(shuffled)
         self.rotate_status.start()
 
     def cog_unload(self):
@@ -31,7 +81,10 @@ class StatusCog(commands.Cog):
 
     @tasks.loop(seconds=STATUS_ROTATION_SECONDS)
     async def rotate_status(self):
-        await self.bot.change_presence(activity=next(self._cycle))
+        await self.bot.change_presence(
+            status=discord.Status.idle,
+            activity=discord.Streaming(name=next(self._cycle), url=STREAM_URL),
+        )
 
     @rotate_status.before_loop
     async def before_rotate_status(self):
