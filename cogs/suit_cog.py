@@ -54,8 +54,9 @@ class SuitCog(commands.Cog):
             "Workbench",
             field_groups=[("Suit", suit_fields), ("Components on Hand", component_fields)],
             footer_lines=footer_lines,
+            icon_key="suit_integrity",
         )
-        await ctx.respond(view=view)
+        await ctx.respond(view=view, files=view.files)
 
     @workbench.command(name="repair", description="Repair your suit back to 100%.")
     async def repair(self, ctx: discord.ApplicationContext):
@@ -76,8 +77,9 @@ class SuitCog(commands.Cog):
                 ("Restored", f"+{result.restored}%"),
             ],
             footer_lines=[random.choice(WORKBENCH_FOOTERS)],
+            icon_key="suit_integrity",
         )
-        await ctx.respond(view=view)
+        await ctx.respond(view=view, files=view.files)
 
 
 def setup(bot: discord.Bot):

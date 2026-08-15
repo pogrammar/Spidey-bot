@@ -3,6 +3,7 @@ from discord.ext import commands
 
 from db.base import async_session
 from services.economy import get_or_create_user
+from utils.icons import emoji as icon_emoji
 from utils.v2_embeds import add_field_groups
 
 # One topic per subject instead of several crammed onto one page — /help used to
@@ -19,7 +20,7 @@ OVERVIEW_BODY = (
 TOPICS = [
     {
         "key": "daily",
-        "emoji": "🔥",
+        "emoji": icon_emoji("streak") or "🔥",
         "title": "Daily",
         "summary": "Free daily cash, XP, and streak bonuses.",
         "body": (
@@ -32,7 +33,7 @@ TOPICS = [
     },
     {
         "key": "patrol",
-        "emoji": "🕸️",
+        "emoji": icon_emoji("attack") or "🕸️",
         "title": "Patrol",
         "summary": "Fight crime — costs Web-Fluid, pays in XP and cash.",
         "body": (
@@ -44,7 +45,7 @@ TOPICS = [
     },
     {
         "key": "earning",
-        "emoji": "📸",
+        "emoji": icon_emoji("camera") or "📸",
         "title": "Work",
         "summary": "Sell patrol photos, or tutor for safe cash.",
         "body": (
@@ -55,7 +56,7 @@ TOPICS = [
     },
     {
         "key": "money",
-        "emoji": "💰",
+        "emoji": icon_emoji("wallet") or "💰",
         "title": "Finance",
         "summary": "Wallet, bank, and what you're carrying.",
         "body": (
@@ -78,7 +79,7 @@ TOPICS = [
     },
     {
         "key": "suit",
-        "emoji": "🔧",
+        "emoji": icon_emoji("suit_integrity") or "🔧",
         "title": "Suit",
         "summary": "Integrity, repair cost, and components.",
         "body": (
@@ -89,7 +90,7 @@ TOPICS = [
     },
     {
         "key": "gadgets",
-        "emoji": "🦾",
+        "emoji": icon_emoji("gadgets_category") or "🦾",
         "title": "Gadgets",
         "summary": "Equip, unequip, and upgrade your loadout.",
         "body": (
@@ -102,21 +103,21 @@ TOPICS = [
     },
     {
         "key": "pvp",
-        "emoji": "🥊",
+        "emoji": icon_emoji("pvp") or "🥊",
         "title": "PvP",
         "summary": "Shake down other players for cash.",
         "body": "`/shakedown @user` — try to steal a cut of their wallet. Can backfire and cost you instead.",
     },
     {
         "key": "store",
-        "emoji": "🛒",
+        "emoji": icon_emoji("store") or "🛒",
         "title": "General Store",
         "summary": "Buy cameras, components, gifts, and gadgets.",
         "body": "`/shop browse` or `/shop buy` — camera, repair components, gifts, gadgets.",
     },
     {
         "key": "trade_post",
-        "emoji": "🏪",
+        "emoji": icon_emoji("market") or "🏪",
         "title": "Trade Post",
         "summary": "Buy and sell with other players.",
         "body": (
@@ -139,7 +140,7 @@ TOPICS = [
     },
     {
         "key": "lab",
-        "emoji": "🧪",
+        "emoji": icon_emoji("lab") or "🧪",
         "title": "Chem Lab",
         "summary": "Brew the Web-Fluid that fuels /patrol.",
         "body": "`/lab brew` — start a Web-Fluid batch. This is what fuels /patrol.\n\n`/lab status` / `/lab collect` — check on it, then collect.",

@@ -10,6 +10,7 @@ from services.busy import get_busy, set_busy
 from services.cooldowns import format_remaining
 from services.economy import get_or_create_user
 from utils.embeds import error_embed
+from utils.icons import emoji
 from utils.v2_embeds import StaticView
 
 ALLY_CHOICES = [OptionChoice(name=name, value=key) for key, name in ALLY_NAMES.items()]
@@ -56,7 +57,7 @@ class AllyCog(commands.Cog):
         view = StaticView(
             "Who You're Neglecting", field_groups=field_groups, footer_lines=[random.choice(ALLY_FOOTERS)]
         )
-        await ctx.respond(view=view)
+        await ctx.respond(view=view, files=view.files)
 
     @ally.command(name="visit", description="Spend some time with Aunt May or MJ.")
     async def visit(
@@ -108,8 +109,9 @@ class AllyCog(commands.Cog):
                 f"You can't /patrol again for {format_remaining(result.visit_seconds)}.",
                 random.choice(ALLY_FOOTERS),
             ],
+            icon_key=gift if gift else None,
         )
-        await ctx.respond(view=view)
+        await ctx.respond(view=view, files=view.files)
 
 
 def setup(bot: discord.Bot):

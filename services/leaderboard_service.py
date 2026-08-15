@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import User
+from utils.icons import emoji as _icon_emoji
 
 LEADERBOARD_LIMIT = 10
 
@@ -17,21 +18,21 @@ LEADERBOARD_LIMIT = 10
 CATEGORIES = {
     "wealth": {
         "label": "Wealth",
-        "emoji": "💰",
+        "emoji": _icon_emoji("money") or "💰",
         "column": User.wallet + User.bank,
         "value_of": lambda u: u.wallet + u.bank,
         "format": lambda v: f"${v:,}",
     },
     "reputation": {
         "label": "Reputation",
-        "emoji": "⭐",
+        "emoji": _icon_emoji("reputation") or "⭐",
         "column": User.reputation_xp,
         "value_of": lambda u: u.reputation_xp,
         "format": lambda v: f"Level {1 + v // 100} ({v:,} XP)",
     },
     "streak": {
         "label": "Daily Streak",
-        "emoji": "🔥",
+        "emoji": _icon_emoji("streak") or "🔥",
         "column": User.daily_streak,
         "value_of": lambda u: u.daily_streak,
         "format": lambda v: f"{v} day{'s' if v != 1 else ''}",

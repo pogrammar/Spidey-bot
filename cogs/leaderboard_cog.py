@@ -6,8 +6,11 @@ from discord.ext import commands
 from db.base import async_session
 from db.models import User
 from services.leaderboard_service import CATEGORIES, get_leaderboard, get_rank
+from utils.icons import thumbnail
 
 MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
+
+CATEGORY_ICON_KEYS = {"wealth": "money", "reputation": "reputation", "streak": "streak"}
 
 LEADERBOARD_FOOTERS = [
     "J. Jonah Jameson refuses to run this as a story. Still true though.",
@@ -32,7 +35,7 @@ class CategorySelect(discord.ui.Select):
         self.panel.category = self.values[0]
         async with async_session() as session:
             await self.panel._render(session)
-        await interaction.response.edit_message(view=self.panel)
+        await interaction.response.edit_message(view=self.panel, files=self.panel.files, attachments=[])
 
 
 class LeaderboardView(discord.ui.DesignerView):
@@ -41,6 +44,7 @@ class LeaderboardView(discord.ui.DesignerView):
         self.author_id = author_id
         self.category = category
         self.message: discord.Message | None = None
+        self.files: list[discord.File] = []
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
@@ -63,12 +67,20 @@ class LeaderboardView(discord.ui.DesignerView):
         entries = await get_leaderboard(session, self.category)
 
         container = discord.ui.Container()
-        container.add_section(
-            discord.ui.TextDisplay(f"# Leaderboard\n{meta['emoji']} {meta['label']} — Top {len(entries) or 10}"),
-            accessory=discord.ui.Button(
-                label=meta["label"], emoji=meta["emoji"], style=discord.ButtonStyle.secondary, disabled=True
-            ),
-        )
+        header_text = f"# Leaderboard\n{meta['emoji']} {meta['label']} — Top {len(entries) or 10}"
+        result = thumbnail(CATEGORY_ICON_KEYS.get(self.category, ""))
+        if result is not None:
+            thumb, file = result
+            container.add_section(discord.ui.TextDisplay(header_text), accessory=thumb)
+            self.files = [file]
+        else:
+            container.add_section(
+                discord.ui.TextDisplay(header_text),
+                accessory=discord.ui.Button(
+                    label=meta["label"], emoji=meta["emoji"], style=discord.ButtonStyle.secondary, disabled=True
+                ),
+            )
+            self.files = []
         container.add_separator()
 
         if not entries:
@@ -105,7 +117,7 @@ class LeaderboardCog(commands.Cog):
         view = LeaderboardView(author_id=ctx.author.id)
         async with async_session() as session:
             await view._render(session)
-        await ctx.respond(view=view)
+        await ctx.respond(view=view, files=view.files)
         view.message = await ctx.interaction.original_response()
 
 

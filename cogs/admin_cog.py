@@ -23,6 +23,7 @@ from services.gadget_service import list_all_gadgets
 from services.inventory_service import add_item, get_editable_row, remove_item
 from services.market_service import admin_cancel_listing
 from utils.embeds import base_embed, error_embed
+from utils.icons import thumbnail
 from utils.v2_embeds import StaticView, add_field_groups
 
 ALLY_CHOICES = [discord.OptionChoice(name=name, value=key) for key, name in ALLY_NAMES.items()]
@@ -105,15 +106,24 @@ async def _check_owner(ctx: discord.ApplicationContext) -> bool:
 
 
 async def _reply(ctx: discord.ApplicationContext, message: str) -> None:
-    await ctx.respond(view=StaticView("Admin", message), ephemeral=True)
+    view = StaticView("Admin", message, icon_key="admin_badge")
+    await ctx.respond(view=view, files=view.files, ephemeral=True)
 
 
-def _add_admin_header(container: discord.ui.Container, title: str) -> None:
-    """Section+badge header — same pattern as patrol/gadget-panel/shop-browse."""
+def _add_admin_header(container: discord.ui.Container, title: str) -> discord.File | None:
+    """Section+badge header — same pattern as patrol/gadget-panel/shop-browse. Real
+    admin_badge art if it exists, else the same disabled-text-badge fallback this
+    project used before any icons existed — never an error either way."""
+    result = thumbnail("admin_badge")
+    if result is not None:
+        thumb, file = result
+        container.add_section(discord.ui.TextDisplay(f"# {title}"), accessory=thumb)
+        return file
     container.add_section(
         discord.ui.TextDisplay(f"# {title}"),
         accessory=discord.ui.Button(label="🛠️ Admin", style=discord.ButtonStyle.secondary, disabled=True),
     )
+    return None
 
 
 class AdminHelpSelect(discord.ui.Select):
@@ -140,6 +150,7 @@ class AdminHelpView(discord.ui.DesignerView):
         self.author_id = author_id
         self.section = HELP_SECTIONS[0][0]
         self.message: discord.Message | None = None
+        self.files: list[discord.File] = []
         self._render()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -162,7 +173,8 @@ class AdminHelpView(discord.ui.DesignerView):
         commands_ = next(cmds for section, cmds in HELP_SECTIONS if section == self.section)
 
         container = discord.ui.Container()
-        _add_admin_header(container, f"Admin — {self.section}")
+        file = _add_admin_header(container, f"Admin — {self.section}")
+        self.files = [file] if file else []
         container.add_separator()
         container.add_text("\n".join(f"• `{name}` — {desc}" for name, desc in commands_))
         container.add_separator()
@@ -195,6 +207,7 @@ class UserInfoView(discord.ui.DesignerView):
         self.target_mention = target_mention
         self.author_id = author_id
         self.message: discord.Message | None = None
+        self.files: list[discord.File] = []
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
@@ -257,7 +270,8 @@ class UserInfoView(discord.ui.DesignerView):
 
         self.clear_items()
         container = discord.ui.Container()
-        _add_admin_header(container, f"Admin — {self.target_display}")
+        file = _add_admin_header(container, f"Admin — {self.target_display}")
+        self.files = [file] if file else []
         add_field_groups(container, field_groups)
         container.add_separator()
         container.add_text(f"-# discord_id: {self.target_id}")
@@ -311,6 +325,7 @@ class AdminsListView(discord.ui.DesignerView):
         self.author_id = author_id
         self.selected_id: int | None = None
         self.message: discord.Message | None = None
+        self.files: list[discord.File] = []
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
@@ -332,7 +347,8 @@ class AdminsListView(discord.ui.DesignerView):
         granted = await list_granted_admins(session)
 
         container = discord.ui.Container()
-        _add_admin_header(container, "Admin — Access List")
+        file = _add_admin_header(container, "Admin — Access List")
+        self.files = [file] if file else []
         container.add_separator()
 
         root_lines = "\n".join(f"• <@{uid}>" for uid in sorted(config.ADMIN_DISCORD_IDS)) or "None configured."
@@ -430,7 +446,7 @@ class AdminCog(commands.Cog):
         if not await _check_owner(ctx):
             return
         view = AdminHelpView(author_id=ctx.author.id)
-        await ctx.respond(view=view, ephemeral=True)
+        await ctx.respond(view=view, files=view.files, ephemeral=True)
         view.message = await ctx.interaction.original_response()
 
     @admin.command(name="bypass", description="Toggle cooldown + brew-time bypass for yourself.")
@@ -474,7 +490,7 @@ class AdminCog(commands.Cog):
             await ctx.respond(embed=error_embed(f"{target.mention} has no profile yet."), ephemeral=True)
             return
 
-        await ctx.respond(view=view, ephemeral=True)
+        await ctx.respond(view=view, files=view.files, ephemeral=True)
         view.message = await ctx.interaction.original_response()
 
     @admin.command(name="wipe", description="Permanently reset a user's ENTIRE profile. Destructive.")
@@ -910,7 +926,7 @@ class AdminCog(commands.Cog):
         view = AdminsListView(author_id=ctx.author.id)
         async with async_session() as session:
             await view._render(session)
-        await ctx.respond(view=view, ephemeral=True)
+        await ctx.respond(view=view, files=view.files, ephemeral=True)
         view.message = await ctx.interaction.original_response()
 
 

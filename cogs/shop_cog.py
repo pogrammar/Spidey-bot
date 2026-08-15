@@ -9,14 +9,15 @@ from db.models import Item
 from services.economy import get_or_create_user
 from services.shop_service import buy_item, list_shop_items
 from utils.embeds import error_embed
+from utils.icons import emoji
 from utils.v2_embeds import StaticView, add_field_groups
 
 # Section grouping for /shop browse. Keeps the dropdown small and scannable instead
 # of dumping every item — tools, gifts, and gadgets — into one long list.
 SHOP_SECTIONS = [
-    ("🛠️ Gear", ("tool", "component")),
-    ("🎁 Gifts", ("gift",)),
-    ("🦾 Gadgets", ("gadget",)),
+    (f"{emoji('gear_category') or '🛠️'} Gear", ("tool", "component")),
+    (f"{emoji('gifts_category') or '🎁'} Gifts", ("gift",)),
+    (f"{emoji('gadgets_category') or '🦾'} Gadgets", ("gadget",)),
 ]
 
 SHOP_FOOTERS = [
@@ -146,7 +147,11 @@ class ShopBrowseView(discord.ui.DesignerView):
         item = self._selected_item(items)
 
         container = discord.ui.Container()
-        title = item.name if item else f"General Store — {label}"
+        if item is not None:
+            item_emoji = emoji(item.key)
+            title = f"{item_emoji} {item.name}" if item_emoji else item.name
+        else:
+            title = f"General Store — {label}"
         if banner:
             body = banner
         elif item is not None:
@@ -194,7 +199,8 @@ class ShopCog(commands.Cog):
 
         def item_field(item: Item) -> tuple[str, str]:
             if _is_locked(item, user.reputation_level):
-                return (item.name, f"🔒 (gadget not unlocked — needs reputation level {item.unlock_level})")
+                lock_emoji = emoji("locked") or "🔒"
+                return (item.name, f"{lock_emoji} (gadget not unlocked — needs reputation level {item.unlock_level})")
             return (f"{item.name} — ${item.price:,}", item.description)
 
         field_groups = []
@@ -203,8 +209,10 @@ class ShopCog(commands.Cog):
             if section_items:
                 field_groups.append((label, [item_field(item) for item in section_items]))
 
-        view = StaticView("General Store", field_groups=field_groups, footer_lines=[random.choice(SHOP_FOOTERS)])
-        await ctx.respond(view=view)
+        view = StaticView(
+            "General Store", field_groups=field_groups, footer_lines=[random.choice(SHOP_FOOTERS)], icon_key="store"
+        )
+        await ctx.respond(view=view, files=view.files)
 
     @shop.command(name="browse", description="Browse the store section by section and buy with one click.")
     async def browse(self, ctx: discord.ApplicationContext):
@@ -237,8 +245,10 @@ class ShopCog(commands.Cog):
             user = await get_or_create_user(session, ctx.author.id)
             ok, message = await buy_item(session, user, item)
         if ok:
-            view = StaticView("General Store", description=message, footer_lines=[random.choice(SHOP_FOOTERS)])
-            await ctx.respond(view=view)
+            view = StaticView(
+                "General Store", description=message, footer_lines=[random.choice(SHOP_FOOTERS)], icon_key="store"
+            )
+            await ctx.respond(view=view, files=view.files)
         else:
             await ctx.respond(embed=error_embed(message))
 

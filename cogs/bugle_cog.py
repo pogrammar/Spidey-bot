@@ -46,8 +46,9 @@ class BugleCog(commands.Cog):
             description,
             field_groups=[("On Hand", quality_fields)],
             footer_lines=[random.choice(BUGLE_FOOTERS)],
+            icon_key="camera",
         )
-        await ctx.respond(view=view)
+        await ctx.respond(view=view, files=view.files)
 
     @bugle.command(name="submit", description="Sell your captured photos to the Daily Bugle.")
     async def submit(self, ctx: discord.ApplicationContext):
@@ -88,8 +89,9 @@ class BugleCog(commands.Cog):
             f"JJJ grumbles but pays up for {result.photos_sold} photo(s).",
             field_groups=field_groups,
             footer_lines=[random.choice(BUGLE_FOOTERS)],
+            icon_key="money",
         )
-        await ctx.respond(view=view)
+        await ctx.respond(view=view, files=view.files)
 
 
 def setup(bot: discord.Bot):

@@ -13,6 +13,33 @@ from __future__ import annotations
 
 import discord
 
+from utils import icons
+
+
+def add_header(
+    container: discord.ui.Container, title: str, description: str = "", icon_key: str | None = None
+) -> discord.File | None:
+    """Adds the title (+ optional description) as the container's header. Renders
+    as a Section with a Thumbnail accessory when icon_key is given and that PNG
+    exists — returns the discord.File that must be included in the response/edit's
+    `files=` list, or the attachment:// URL won't resolve. Falls back to a plain
+    '# title' TextDisplay (no file needed, returns None) when there's no icon_key
+    or the art hasn't been dropped into assets/icons/ yet — never an error either
+    way, just a plainer header until the art shows up."""
+    header_text = f"# {title}"
+    if description:
+        header_text += f"\n{description}"
+
+    if icon_key:
+        result = icons.thumbnail(icon_key)
+        if result is not None:
+            thumb, file = result
+            container.add_section(discord.ui.TextDisplay(header_text), accessory=thumb)
+            return file
+
+    container.add_item(discord.ui.TextDisplay(header_text))
+    return None
+
 
 def _add_group(
     container: discord.ui.Container, heading: str | None, fields: list[tuple[str, str]], bulleted: bool = False
@@ -84,26 +111,29 @@ def static_container(
     fields: list[tuple[str, str]] | None = None,
     field_groups: list[tuple[str, list[tuple[str, str]]]] | None = None,
     bulleted: bool = False,
-) -> discord.ui.Container:
+    icon_key: str | None = None,
+) -> tuple[discord.ui.Container, discord.File | None]:
     """`fields` is a flat, unheaded list — fine for short commands with 2-4 related
     values. `field_groups` is `[(heading, fields), ...]` — use it once a command's
     data actually splits into distinct categories (e.g. money vs. standing,
     equipped vs. stored) so the layout reflects that instead of one flat list
     pretending everything's the same kind of thing. Pass one or the other, not both.
 
+    icon_key: see add_header — renders the title as a Section+Thumbnail when the
+    art exists. Returns (container, file); the file (if not None) must be passed
+    through to the response/edit's `files=` list by the caller.
+
     Only one visible divider brackets the body (header -> content); different
     *groups* get a real divider between them too. Fields within the same group
     either each get their own block (default) or get combined into one bulleted
     block (bulleted=True) — see _add_group."""
     container = discord.ui.Container()
-    container.add_item(discord.ui.TextDisplay(f"# {title}"))
-    if description:
-        container.add_item(discord.ui.TextDisplay(description))
+    file = add_header(container, title, description, icon_key)
 
     groups = field_groups or ([(None, fields)] if fields else [])
     add_field_groups(container, groups, bulleted)
 
-    return container
+    return container, file
 
 
 class StaticView(discord.ui.DesignerView):
@@ -114,7 +144,12 @@ class StaticView(discord.ui.DesignerView):
     markdown, applied per line, not per block). Typically a functional note (a
     cooldown/warning the player needs) plus a randomized witty one-liner picked
     with random.choice() from that cog's own flavor pool at the call site — see
-    any converted cog for the pattern."""
+    any converted cog for the pattern.
+
+    icon_key: pass to give the title a Thumbnail (see add_header). When set and
+    the art exists, `self.files` holds the discord.File that must be passed to
+    `ctx.respond(view=view, files=view.files)` — always safe to pass even when
+    empty, so call sites don't need an if-check of their own."""
 
     def __init__(
         self,
@@ -124,15 +159,17 @@ class StaticView(discord.ui.DesignerView):
         field_groups: list[tuple[str, list[tuple[str, str]]]] | None = None,
         bulleted: bool = False,
         footer_lines: list[str] | None = None,
+        icon_key: str | None = None,
         timeout: float | None = None,
     ):
         super().__init__(timeout=timeout)
-        container = static_container(title, description, fields, field_groups, bulleted)
+        container, file = static_container(title, description, fields, field_groups, bulleted, icon_key)
         if footer_lines:
             container.add_item(discord.ui.Separator())
             subtext = "\n".join(f"-# {line}" for line in footer_lines if line)
             container.add_item(discord.ui.TextDisplay(subtext))
         self.add_item(container)
+        self.files: list[discord.File] = [file] if file else []
 
 
 class _PrevPageButton(discord.ui.Button):
@@ -159,24 +196,28 @@ class _NextPageButton(discord.ui.Button):
 
 class PaginatedView(discord.ui.DesignerView):
     """Prev/Next pager over a list of static_container-shaped pages — for content-only
-    browsing (/help, /market listings) with no per-page interactivity beyond turning
-    pages. Each page is a dict of static_container's kwargs (title, description,
-    fields/field_groups, bulleted); the page counter renders as the same disabled-
-    Button Section accessory every other panel (patrol, gadget panel, shop browse)
-    uses, so a page number never needs its own dedicated nav button the way V1's
-    generic Paginator did it."""
+    browsing (/market listings) with no per-page interactivity beyond turning pages.
+    Each page is a dict of static_container's kwargs (title, description,
+    fields/field_groups, bulleted).
+
+    icon_key adds an inline emoji before the title (see utils.icons.emoji) rather
+    than a Thumbnail accessory — the accessory slot here is already doing real work
+    (the page counter), and a Section can only have one accessory, so the icon has
+    to share space with the title text instead of competing for that slot."""
 
     def __init__(
         self,
         pages: list[dict],
         author_id: int,
         footer_lines: list[str] | None = None,
+        icon_key: str | None = None,
         timeout: float = 180,
     ):
         super().__init__(timeout=timeout)
         self.pages = pages
         self.author_id = author_id
         self.footer_lines = footer_lines
+        self.icon_key = icon_key
         self.index = 0
         self.message: discord.Message | None = None
         self._render()
@@ -201,7 +242,9 @@ class PaginatedView(discord.ui.DesignerView):
         page = self.pages[self.index]
 
         container = discord.ui.Container()
-        header_text = f"# {page['title']}"
+        icon_prefix = icons.emoji(self.icon_key) if self.icon_key else None
+        title_line = f"{icon_prefix} {page['title']}" if icon_prefix else page["title"]
+        header_text = f"# {title_line}"
         if page.get("description"):
             header_text += f"\n{page['description']}"
         container.add_section(

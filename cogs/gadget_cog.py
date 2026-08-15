@@ -16,6 +16,7 @@ from services.gadget_service import (
     upgrade_gadget,
 )
 from utils.embeds import error_embed
+from utils.icons import emoji
 from utils.v2_embeds import StaticView, add_field_groups
 
 GADGET_FOOTERS = [
@@ -90,7 +91,9 @@ class GadgetSelect(discord.ui.Select):
 
 class EquipButton(discord.ui.Button):
     def __init__(self, panel: "GadgetPanelView", *, disabled: bool):
-        super().__init__(label="Equip", emoji="✅", style=discord.ButtonStyle.primary, disabled=disabled)
+        super().__init__(
+            label="Equip", emoji=emoji("ready") or "✅", style=discord.ButtonStyle.primary, disabled=disabled
+        )
         self.panel = panel
 
     async def callback(self, interaction: discord.Interaction):
@@ -168,7 +171,12 @@ class GadgetPanelView(discord.ui.DesignerView):
         equipped_count = sum(1 for v in views if v.equipped)
 
         container = discord.ui.Container()
-        title = best.name if best else "Your Gadgets"
+        if best is not None:
+            item_emoji = emoji(best.item_key)
+            title = f"{item_emoji} {best.name}" if item_emoji else best.name
+        else:
+            category_emoji = emoji("gadgets_category")
+            title = f"{category_emoji} Your Gadgets" if category_emoji else "Your Gadgets"
         body = banner or ("Pick a gadget from the dropdown." if best is None else "")
         header_text = f"# {title}"
         if body:
@@ -241,8 +249,9 @@ class GadgetCog(commands.Cog):
                 f"You can have up to {MAX_EQUIPPED_GADGETS} equipped at once.",
                 random.choice(GADGET_FOOTERS),
             ],
+            icon_key="gadgets_category",
         )
-        await ctx.respond(view=v2_view)
+        await ctx.respond(view=v2_view, files=v2_view.files)
 
     @gadget.command(name="panel", description="Interactive gadget menu — pick, equip, upgrade.")
     async def panel(self, ctx: discord.ApplicationContext):
@@ -269,7 +278,10 @@ class GadgetCog(commands.Cog):
             user = await get_or_create_user(session, ctx.author.id)
             ok, message = await equip_gadget(session, user, gadget)
         if ok:
-            await ctx.respond(view=StaticView("Gadgets", description=message, footer_lines=[random.choice(GADGET_FOOTERS)]))
+            view = StaticView(
+                "Gadgets", description=message, footer_lines=[random.choice(GADGET_FOOTERS)], icon_key="gadgets_category"
+            )
+            await ctx.respond(view=view, files=view.files)
         else:
             await ctx.respond(embed=error_embed(message))
 
@@ -283,7 +295,10 @@ class GadgetCog(commands.Cog):
             user = await get_or_create_user(session, ctx.author.id)
             ok, message = await unequip_gadget(session, user, gadget)
         if ok:
-            await ctx.respond(view=StaticView("Gadgets", description=message, footer_lines=[random.choice(GADGET_FOOTERS)]))
+            view = StaticView(
+                "Gadgets", description=message, footer_lines=[random.choice(GADGET_FOOTERS)], icon_key="gadgets_category"
+            )
+            await ctx.respond(view=view, files=view.files)
         else:
             await ctx.respond(embed=error_embed(message))
 
@@ -297,7 +312,10 @@ class GadgetCog(commands.Cog):
             user = await get_or_create_user(session, ctx.author.id)
             ok, message = await upgrade_gadget(session, user, gadget)
         if ok:
-            await ctx.respond(view=StaticView("Gadgets", description=message, footer_lines=[random.choice(GADGET_FOOTERS)]))
+            view = StaticView(
+                "Gadgets", description=message, footer_lines=[random.choice(GADGET_FOOTERS)], icon_key="gadgets_category"
+            )
+            await ctx.respond(view=view, files=view.files)
         else:
             await ctx.respond(embed=error_embed(message))
 

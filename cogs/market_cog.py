@@ -15,6 +15,7 @@ from services.market_service import (
     list_sellable_items,
 )
 from utils.embeds import base_embed, error_embed
+from utils.icons import emoji
 from utils.item_display import badge
 from utils.v2_embeds import PaginatedView, StaticView
 
@@ -45,14 +46,15 @@ def _build_listing_pages(listings: list[ListingView]) -> list[dict]:
     total_pages = max(1, (len(listings) - 1) // LISTINGS_PER_PAGE + 1)
     for page_num in range(total_pages):
         chunk = listings[page_num * LISTINGS_PER_PAGE : (page_num + 1) * LISTINGS_PER_PAGE]
-        fields = [
-            (
-                f"{badge(listing.item_key)}{listing.item_name}",
+        fields = []
+        for listing in chunk:
+            item_emoji = emoji(listing.item_key)
+            prefix = f"{item_emoji} " if item_emoji else ""
+            fields.append((
+                f"{prefix}{badge(listing.item_key)}{listing.item_name}",
                 f"**ID: {listing.id}**\nx{listing.quantity} @ ${listing.price_per_unit:,} each "
                 f"(${listing.quantity * listing.price_per_unit:,} total)\nSeller: <@{listing.seller_id}>",
-            )
-            for listing in chunk
-        ]
+            ))
         pages.append({"title": "Trade Post", "fields": fields})
     return pages
 
@@ -111,11 +113,13 @@ class MarketCog(commands.Cog):
         footer_lines = ["Buy with /market buy <id>.", random.choice(MARKET_FOOTERS)]
 
         if len(pages) == 1:
-            view = StaticView(pages[0]["title"], fields=pages[0]["fields"], footer_lines=footer_lines)
-            await ctx.respond(view=view)
+            view = StaticView(
+                pages[0]["title"], fields=pages[0]["fields"], footer_lines=footer_lines, icon_key="market"
+            )
+            await ctx.respond(view=view, files=view.files)
             return
 
-        view = PaginatedView(pages, author_id=ctx.author.id, footer_lines=footer_lines)
+        view = PaginatedView(pages, author_id=ctx.author.id, footer_lines=footer_lines, icon_key="market")
         await ctx.respond(view=view)
         view.message = await ctx.interaction.original_response()
 
@@ -141,7 +145,10 @@ class MarketCog(commands.Cog):
             user = await get_or_create_user(session, ctx.author.id)
             ok, message = await buy_listing(session, user, listing_id)
         if ok:
-            await ctx.respond(view=StaticView("Trade Post", description=message, footer_lines=[random.choice(MARKET_FOOTERS)]))
+            view = StaticView(
+                "Trade Post", description=message, footer_lines=[random.choice(MARKET_FOOTERS)], icon_key="market"
+            )
+            await ctx.respond(view=view, files=view.files)
         else:
             await ctx.respond(embed=error_embed(message))
 
@@ -151,7 +158,10 @@ class MarketCog(commands.Cog):
             user = await get_or_create_user(session, ctx.author.id)
             ok, message = await cancel_listing(session, user, listing_id)
         if ok:
-            await ctx.respond(view=StaticView("Trade Post", description=message, footer_lines=[random.choice(MARKET_FOOTERS)]))
+            view = StaticView(
+                "Trade Post", description=message, footer_lines=[random.choice(MARKET_FOOTERS)], icon_key="market"
+            )
+            await ctx.respond(view=view, files=view.files)
         else:
             await ctx.respond(embed=error_embed(message))
 

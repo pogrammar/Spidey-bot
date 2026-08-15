@@ -76,8 +76,9 @@ class PvpCog(commands.Cog):
                 f"You corner {target.display_name} in an alley and lighten their pockets.",
                 fields=[("Cash Taken", f"${result.amount:,}")],
                 footer_lines=[random.choice(SHAKEDOWN_FOOTERS)],
+                icon_key="pvp",
             )
-            await ctx.respond(view=view)
+            await ctx.respond(view=view, files=view.files)
         else:
             embed = error_embed(f"{target.display_name} fights back — or someone sees you. You bail, but not clean.")
             embed.add_field(name="Cash Lost", value=f"${result.amount:,}")

@@ -62,8 +62,9 @@ class EconomyCog(commands.Cog):
                 "Cash on hand is stealable. Bank cash isn't — deposit what you can.",
                 random.choice(LEDGER_FOOTERS),
             ],
+            icon_key="wallet",
         )
-        await ctx.respond(view=view)
+        await ctx.respond(view=view, files=view.files)
 
     @discord.slash_command(name="inventory", description="See what you're carrying.")
     async def inventory(self, ctx: discord.ApplicationContext):
@@ -102,8 +103,13 @@ class EconomyCog(commands.Cog):
         ordered_categories += [c for c in by_category if c not in category_order]
         field_groups = [(category_labels.get(c, c.title()), by_category[c]) for c in ordered_categories]
 
-        view = StaticView("Inventory", field_groups=field_groups, footer_lines=[random.choice(INVENTORY_FOOTERS)])
-        await ctx.respond(view=view)
+        view = StaticView(
+            "Inventory",
+            field_groups=field_groups,
+            footer_lines=[random.choice(INVENTORY_FOOTERS)],
+            icon_key="gear_category",
+        )
+        await ctx.respond(view=view, files=view.files)
 
     bank = discord.SlashCommandGroup("bank", "Manage your secure bank stash.")
 
@@ -115,7 +121,8 @@ class EconomyCog(commands.Cog):
             user = await get_or_create_user(session, ctx.author.id)
             ok, message = await deposit(session, user, amount)
         if ok:
-            await ctx.respond(view=StaticView("Bank", description=message, footer_lines=[random.choice(BANK_FOOTERS)]))
+            view = StaticView("Bank", description=message, footer_lines=[random.choice(BANK_FOOTERS)], icon_key="bank")
+            await ctx.respond(view=view, files=view.files)
         else:
             await ctx.respond(embed=error_embed(message))
 
@@ -127,7 +134,8 @@ class EconomyCog(commands.Cog):
             user = await get_or_create_user(session, ctx.author.id)
             ok, message = await withdraw(session, user, amount)
         if ok:
-            await ctx.respond(view=StaticView("Bank", description=message, footer_lines=[random.choice(BANK_FOOTERS)]))
+            view = StaticView("Bank", description=message, footer_lines=[random.choice(BANK_FOOTERS)], icon_key="bank")
+            await ctx.respond(view=view, files=view.files)
         else:
             await ctx.respond(embed=error_embed(message))
 

@@ -80,8 +80,9 @@ class TutoringCog(commands.Cog):
             "You duck into a study room and drill calculus into someone who'd rather be anywhere else.",
             field_groups=[("Earnings", earnings_fields), ("Cost", cost_fields)],
             footer_lines=["You can't /patrol again for 2 minutes.", random.choice(TUTORING_FOOTERS)],
+            icon_key="money",
         )
-        await ctx.respond(view=view)
+        await ctx.respond(view=view, files=view.files)
 
 
 def setup(bot: discord.Bot):

@@ -36,6 +36,18 @@ def set_thumbnail(embed: discord.Embed, file: discord.File | None) -> discord.Em
     return embed
 
 
+def thumbnail(key: str) -> tuple[discord.ui.Thumbnail, discord.File] | None:
+    """A (Thumbnail, File) pair for a Components V2 Section accessory — add the
+    Thumbnail as the section's accessory, and make sure the File ends up in the
+    response/edit's `files=` list, or the attachment:// URL won't resolve to
+    anything. Returns None (same 'render without it' contract as icon_file()) if
+    that PNG hasn't been dropped into assets/icons/ yet."""
+    file = icon_file(key)
+    if file is None:
+        return None
+    return discord.ui.Thumbnail(url=f"attachment://{file.filename}"), file
+
+
 # Application emoji, uploaded once via the Discord Developer Portal — unlike the
 # icon_file() system above, these aren't read off disk at all; Discord hosts them
 # once uploaded, and the bot just needs the `<:name:id>` reference string to use
@@ -67,7 +79,7 @@ EMOJI: dict[str, str] = {
     "ready": "<:ready:1538072475609473124>",
     "rare_badge": "<:Rarebadge:1538072471888994474>",
     "pvp": "<:PVP:1538072469066227802>",
-    "money": "<:money:1538072464431513630>",
+    "money": "<:money:1538083908971794503>",
     "micro_electronics": "<:micro_electronics:1538072462225317958>",
     "market": "<:market:1538072459838881894>",
     "locked": "<:locked:1538072456814923856>",

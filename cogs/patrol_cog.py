@@ -26,6 +26,7 @@ from services.patrol_service import (
 )
 from services.suit_service import repair_readiness_warning
 from utils.embeds import error_embed
+from utils.icons import emoji, thumbnail
 from utils.v2_embeds import StaticView, add_field_groups
 
 # Round decisions get a full 30 seconds — this is a choice, not a reflex test. Outcomes
@@ -61,7 +62,9 @@ def _cap(name: str) -> str:
 
 class AttackButton(discord.ui.Button):
     def __init__(self, battle_view: "PatrolBattleView", *, disabled: bool):
-        super().__init__(label="Attack", emoji="⚡", style=discord.ButtonStyle.danger, disabled=disabled)
+        super().__init__(
+            label="Attack", emoji=emoji("attack") or "⚡", style=discord.ButtonStyle.danger, disabled=disabled
+        )
         self.battle_view = battle_view
 
     async def callback(self, interaction: discord.Interaction):
@@ -70,7 +73,9 @@ class AttackButton(discord.ui.Button):
 
 class EvadeButton(discord.ui.Button):
     def __init__(self, battle_view: "PatrolBattleView", *, disabled: bool):
-        super().__init__(label="Evade", emoji="🛡️", style=discord.ButtonStyle.primary, disabled=disabled)
+        super().__init__(
+            label="Evade", emoji=emoji("evade") or "🛡️", style=discord.ButtonStyle.primary, disabled=disabled
+        )
         self.battle_view = battle_view
 
     async def callback(self, interaction: discord.Interaction):
@@ -82,7 +87,9 @@ class GadgetActionButton(discord.ui.Button):
     instead of a single fixed button, since which gadget to spend matters."""
 
     def __init__(self, gadget_key: str, gadget_name: str, battle_view: "PatrolBattleView", *, disabled: bool):
-        super().__init__(label=gadget_name, emoji="🔧", style=discord.ButtonStyle.success, disabled=disabled)
+        super().__init__(
+            label=gadget_name, emoji=emoji("gadget_use") or "🔧", style=discord.ButtonStyle.success, disabled=disabled
+        )
         self.gadget_key = gadget_key
         self.battle_view = battle_view
 
@@ -98,6 +105,7 @@ class PatrolBattleView(discord.ui.DesignerView):
         self.state = state
         self.author_id = author_id
         self.message: discord.Message | None = None
+        self.files: list[discord.File] = []
         self._render(banner=intro_banner)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -107,28 +115,35 @@ class PatrolBattleView(discord.ui.DesignerView):
         return True
 
     def _tier(self) -> tuple[str, str]:
-        return ("Gold", "🥇") if self.state.outcome_key == "crime_gold" else ("Bronze", "🥉")
+        return ("Gold", "tier_gold") if self.state.outcome_key == "crime_gold" else ("Bronze", "tier_bronze")
+
+    def _header_accessory(
+        self, icon_key: str, fallback_label: str, fallback_style: discord.ButtonStyle
+    ) -> tuple[discord.ui.Thumbnail | discord.ui.Button, discord.File | None]:
+        """Real badge art if it exists, else the same disabled-text-badge fallback
+        this project used before any icons existed — never an error either way."""
+        result = thumbnail(icon_key)
+        if result is not None:
+            return result
+        return discord.ui.Button(label=fallback_label, style=fallback_style, disabled=True), None
 
     def _render(self, banner: str | None = None) -> None:
         """Round-in-progress card: live HP/suit meters, the last few log lines under a
         large-spacing divider (visually splitting 'what's true right now' from 'what
         just happened'), and a real ActionRow — no embed involved at all."""
         self.clear_items()
-        tier, tier_emoji = self._tier()
+        tier, tier_icon_key = self._tier()
         round_num = min(self.state.round_number, self.state.max_rounds)
 
         container = discord.ui.Container()
         header_text = f"# Patrol Battle — Round {round_num}/{self.state.max_rounds}"
         if banner:
             header_text += f"\n{banner}"
-        container.add_section(
-            discord.ui.TextDisplay(header_text),
-            accessory=discord.ui.Button(
-                label=f"{tier_emoji} {tier}",
-                style=discord.ButtonStyle.success if tier == "Gold" else discord.ButtonStyle.secondary,
-                disabled=True,
-            ),
+        accessory, file = self._header_accessory(
+            tier_icon_key, tier, discord.ButtonStyle.success if tier == "Gold" else discord.ButtonStyle.secondary
         )
+        container.add_section(discord.ui.TextDisplay(header_text), accessory=accessory)
+        self.files = [file] if file else []
         container.add_separator()
 
         container.add_text(
@@ -143,7 +158,8 @@ class PatrolBattleView(discord.ui.DesignerView):
 
         if self.state.combo_ready:
             container.add_separator(divider=False)
-            container.add_text("⚡ **Combo Ready** — next Attack is a guaranteed hit for bonus damage.")
+            combo_emoji = emoji("attack") or "⚡"
+            container.add_text(f"{combo_emoji} **Combo Ready** — next Attack is a guaranteed hit for bonus damage.")
 
         if self.state.log:
             container.add_separator(spacing=discord.SeparatorSpacingSize.large)
@@ -170,23 +186,22 @@ class PatrolBattleView(discord.ui.DesignerView):
         tier, _ = self._tier()
 
         if timed_out:
-            result_label = "⏱️ Timed Out"
+            result_icon_key, result_label = "timeout", "Timed Out"
             headline = "You hesitate too long and the moment passes."
             badge_style = discord.ButtonStyle.secondary
         elif report.won_clean:
-            result_label = "🏆 Victory"
+            result_icon_key, result_label = "victory", "Victory"
             headline = f"{_cap(self.state.enemy_name)} goes down clean."
             badge_style = discord.ButtonStyle.success
         else:
-            result_label = "🏃 Retreated"
+            result_icon_key, result_label = "retreat", "Retreated"
             headline = f"{_cap(self.state.enemy_name)} is still standing — you disengage."
             badge_style = discord.ButtonStyle.danger
 
         container = discord.ui.Container()
-        container.add_section(
-            discord.ui.TextDisplay(f"# Patrol Battle — {tier} — Over\n{headline}"),
-            accessory=discord.ui.Button(label=result_label, style=badge_style, disabled=True),
-        )
+        accessory, file = self._header_accessory(result_icon_key, result_label, badge_style)
+        container.add_section(discord.ui.TextDisplay(f"# Patrol Battle — {tier} — Over\n{headline}"), accessory=accessory)
+        self.files = [file] if file else []
 
         outcome_fields = [("Reputation XP", f"+{report.xp_gained}")]
         if report.cash_gained:
@@ -196,7 +211,9 @@ class PatrolBattleView(discord.ui.DesignerView):
 
         if report.photo_banked:
             caught = "Camera broke mid-shot!" if report.camera_broke else "Photo saved for the Bugle."
-            field_groups.append((f"{report.photo_quality.title()} Photo Op", [("", caught)]))
+            camera_emoji = emoji("camera")
+            heading = f"{camera_emoji} {report.photo_quality.title()} Photo Op" if camera_emoji else f"{report.photo_quality.title()} Photo Op"
+            field_groups.append((heading, [("", caught)]))
 
         if report.unprotected_penalty:
             value = (
@@ -210,16 +227,21 @@ class PatrolBattleView(discord.ui.DesignerView):
 
         if report.gadgets_broken:
             value = f"{', '.join(report.gadgets_broken)} took too much punishment and gave out. Check /shop."
-            field_groups.append(("Gadget Broke", [("", value)]))
+            gadget_emoji = emoji("gadget_use")
+            heading = f"{gadget_emoji} Gadget Broke" if gadget_emoji else "Gadget Broke"
+            field_groups.append((heading, [("", value)]))
 
         if report.donation_flavor:
-            field_groups.append(("City Thanks You", [("", f"{report.donation_flavor} (+${report.donation_cash:,})")]))
+            money_emoji = emoji("money")
+            heading = f"{money_emoji} City Thanks You" if money_emoji else "City Thanks You"
+            field_groups.append((heading, [("", f"{report.donation_flavor} (+${report.donation_cash:,})")]))
 
         if report.hazard_flavor:
             field_groups.append(("Parker Luck", [("", f"{report.hazard_flavor} (${report.hazard_cash:,})")]))
 
         if suit_warning:
-            field_groups.append(("⚠️ Suit Warning", [("", suit_warning)]))
+            warning_emoji = emoji("suit_warning") or "⚠️"
+            field_groups.append((f"{warning_emoji} Suit Warning", [("", suit_warning)]))
 
         add_field_groups(container, field_groups)
         self.add_item(container)
@@ -237,6 +259,8 @@ class PatrolBattleView(discord.ui.DesignerView):
             self.state.round_number += 1
 
         if not self.state.ended:
+            # Tier badge doesn't change round to round, so the attachment from the
+            # initial send stays valid — no need to touch files/attachments here.
             self._render()
             await interaction.response.edit_message(view=self)
             return
@@ -249,7 +273,9 @@ class PatrolBattleView(discord.ui.DesignerView):
 
         self.stop()
         self._render_final(report, suit_warning)
-        await interaction.response.edit_message(view=self)
+        # Swapping from the tier badge to the outcome badge — a genuinely different
+        # image, so attachments=[] clears the old one and files=self.files adds the new.
+        await interaction.response.edit_message(view=self, files=self.files, attachments=[])
 
     async def on_timeout(self) -> None:
         if self.state.ended:
@@ -265,7 +291,7 @@ class PatrolBattleView(discord.ui.DesignerView):
         self._render_final(report, suit_warning=None, timed_out=True)
         if self.message is not None:
             try:
-                await self.message.edit(view=self)
+                await self.message.edit(view=self, files=self.files, attachments=[])
             except discord.HTTPException:
                 pass
 
@@ -291,9 +317,10 @@ def _noncombat_view(result: PatrolResult, suit_warning: str | None) -> StaticVie
     if result.hazard_flavor:
         field_groups.append(("Parker Luck", [("", f"{result.hazard_flavor} (${result.hazard_cash:,})")]))
     if suit_warning:
-        field_groups.append(("⚠️ Suit Warning", [("", suit_warning)]))
+        warning_emoji = emoji("suit_warning") or "⚠️"
+        field_groups.append((f"{warning_emoji} Suit Warning", [("", suit_warning)]))
 
-    return StaticView("Patrol Report", result.flavor, field_groups=field_groups)
+    return StaticView("Patrol Report", result.flavor, field_groups=field_groups, icon_key="web_fluid_vial")
 
 
 class PatrolCog(commands.Cog):
@@ -334,7 +361,8 @@ class PatrolCog(commands.Cog):
                 result = await finish_noncombat_patrol(session, user, start)
                 await set_cooldown(session, user.discord_id, "patrol", PATROL_COOLDOWN_SECONDS)
                 suit_warning = await repair_readiness_warning(session, user)
-                await ctx.respond(view=_noncombat_view(result, suit_warning))
+                noncombat_view = _noncombat_view(result, suit_warning)
+                await ctx.respond(view=noncombat_view, files=noncombat_view.files)
                 return
 
             # Crime encounter — lock /patrol for the whole possible battle window so a
@@ -359,7 +387,7 @@ class PatrolCog(commands.Cog):
 
         fluid_note = "" if start.web_fluid_used else f" (out of Web-Fluid — cost you ${start.web_fluid_tax:,})"
         view = PatrolBattleView(state, ctx.author.id, intro_banner=f"{start.flavor}{fluid_note}")
-        await ctx.respond(view=view)
+        await ctx.respond(view=view, files=view.files)
         view.message = await ctx.interaction.original_response()
 
 

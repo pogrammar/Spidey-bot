@@ -10,6 +10,10 @@ from services.economy import get_or_create_user
 from utils.embeds import error_embed
 from utils.v2_embeds import StaticView
 
+LAB_ICON = "lab"
+VIAL_ICON = "web_fluid_vial"
+MUTATION_ICON = "unstable_web_fluid"
+
 LAB_FOOTERS = [
     "ESU's chem lab was not built for this.",
     "Somewhere, a professor is very confused about the missing beakers.",
@@ -35,8 +39,9 @@ class LabCog(commands.Cog):
                 "Chem Lab",
                 f"Nothing brewing. Start a batch for ${BREW_COST} with /lab brew.",
                 footer_lines=[random.choice(LAB_FOOTERS)],
+                icon_key=LAB_ICON,
             )
-            await ctx.respond(view=view)
+            await ctx.respond(view=view, files=view.files)
             return
 
         now = datetime.datetime.utcnow()
@@ -45,8 +50,8 @@ class LabCog(commands.Cog):
         else:
             minutes = int((brew.ready_at - now).total_seconds() // 60)
             status_text = f"Still cooking, about {minutes} minutes left."
-        view = StaticView("Chem Lab", status_text, footer_lines=[random.choice(LAB_FOOTERS)])
-        await ctx.respond(view=view)
+        view = StaticView("Chem Lab", status_text, footer_lines=[random.choice(LAB_FOOTERS)], icon_key=LAB_ICON)
+        await ctx.respond(view=view, files=view.files)
 
     @lab.command(name="brew", description="Start a new Web-Fluid batch.")
     async def brew(self, ctx: discord.ApplicationContext):
@@ -54,8 +59,10 @@ class LabCog(commands.Cog):
             user = await get_or_create_user(session, ctx.author.id)
             ok, message = await start_brew(session, user)
         if ok:
-            view = StaticView("Chem Lab", description=message, footer_lines=[random.choice(LAB_FOOTERS)])
-            await ctx.respond(view=view)
+            view = StaticView(
+                "Chem Lab", description=message, footer_lines=[random.choice(LAB_FOOTERS)], icon_key=VIAL_ICON
+            )
+            await ctx.respond(view=view, files=view.files)
         else:
             await ctx.respond(embed=error_embed(message))
 
@@ -79,8 +86,9 @@ class LabCog(commands.Cog):
             f"You collect {result.vials}x Web-Fluid Vial.",
             fields=fields,
             footer_lines=[random.choice(LAB_FOOTERS)],
+            icon_key=MUTATION_ICON if result.mutated else VIAL_ICON,
         )
-        await ctx.respond(view=view)
+        await ctx.respond(view=view, files=view.files)
 
 
 def setup(bot: discord.Bot):
