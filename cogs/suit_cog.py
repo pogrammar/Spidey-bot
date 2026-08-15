@@ -14,6 +14,7 @@ from services.suit_service import (
     repair_suit,
 )
 from utils.embeds import error_embed
+from utils.icons import item_label
 from utils.v2_embeds import StaticView
 
 WORKBENCH_FOOTERS = [
@@ -41,10 +42,15 @@ class SuitCog(commands.Cog):
         suit_fields = [("Suit Integrity", f"{user.suit_integrity}%")]
         if missing > 0:
             cost = missing * REPAIR_COST_PER_POINT
-            extra = " + 1 Micro-Electronics" if missing >= ELECTRONICS_THRESHOLD else ""
-            suit_fields.append(("Full Repair Cost", f"${cost:,} + 1 Spandex Fabric{extra}"))
+            extra = f" + 1 {item_label(ELECTRONICS_ITEM_KEY, 'Micro-Electronics')}" if missing >= ELECTRONICS_THRESHOLD else ""
+            suit_fields.append(
+                ("Full Repair Cost", f"${cost:,} + 1 {item_label(SPANDEX_ITEM_KEY, 'Spandex Fabric')}{extra}")
+            )
 
-        component_fields = [("Spandex Fabric", str(spandex)), ("Micro-Electronics", str(electronics))]
+        component_fields = [
+            (item_label(SPANDEX_ITEM_KEY, "Spandex Fabric"), str(spandex)),
+            (item_label(ELECTRONICS_ITEM_KEY, "Micro-Electronics"), str(electronics)),
+        ]
 
         footer_lines = [random.choice(WORKBENCH_FOOTERS)]
         if user.eviction_meter >= 100:
@@ -68,12 +74,12 @@ class SuitCog(commands.Cog):
             await ctx.respond(embed=error_embed(result.message))
             return
 
-        extra = " + 1 Micro-Electronics" if result.used_electronics else ""
+        extra = f" + 1 {item_label(ELECTRONICS_ITEM_KEY, 'Micro-Electronics')}" if result.used_electronics else ""
         view = StaticView(
             "Workbench",
             result.message,
             fields=[
-                ("Cost", f"${result.cash_cost:,} + 1 Spandex Fabric{extra}"),
+                ("Cost", f"${result.cash_cost:,} + 1 {item_label(SPANDEX_ITEM_KEY, 'Spandex Fabric')}{extra}"),
                 ("Restored", f"+{result.restored}%"),
             ],
             footer_lines=[random.choice(WORKBENCH_FOOTERS)],

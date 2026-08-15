@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Ally, GiftUsage, Item, User
 from services.inventory_service import remove_item
+from utils.icons import item_label
 
 ALLY_NAMES = {"aunt_may": "Aunt May", "mj": "MJ"}
 
@@ -157,9 +158,9 @@ async def visit_ally(
         if gift_item is None or gift_item.category != "gift":
             return False, "That's not a gift.", None
         if not await remove_item(session, user.discord_id, gift_key, 1):
-            return False, f"You don't have a {gift_item.name}. Buy one from /shop first.", None
+            return False, f"You don't have a {item_label(gift_key, gift_item.name)}. Buy one from /shop first.", None
 
-        gift_name = gift_item.name
+        gift_name = item_label(gift_key, gift_item.name)
 
         if ally.consecutive_gift_visits >= GIFT_STREAK_THRESHOLD:
             backfired = True

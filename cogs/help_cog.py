@@ -3,7 +3,7 @@ from discord.ext import commands
 
 from db.base import async_session
 from services.economy import get_or_create_user
-from utils.icons import emoji as icon_emoji
+from utils.icons import emoji as icon_emoji, item_label
 from utils.v2_embeds import add_field_groups
 
 # One topic per subject instead of several crammed onto one page — /help used to
@@ -37,7 +37,8 @@ TOPICS = [
         "title": "Patrol",
         "summary": "Fight crime — costs Web-Fluid, pays in XP and cash.",
         "body": (
-            "• `/patrol` — swing out and see what's happening. Costs 1 Web-Fluid Vial (or cash if you're out).\n"
+            f"• `/patrol` — swing out and see what's happening. Costs 1 "
+            f"{item_label('web_fluid_vial', 'Web-Fluid Vial')} (or cash if you're out).\n"
             "• Crimes turn into a real fight: Attack, Evade, or Use Gadget each round — your call decides it.\n"
             "• Evade sets up a guaranteed bonus-damage Attack next round.\n"
             "• Gets tougher as your reputation climbs. 30 sec cooldown."
@@ -96,9 +97,10 @@ TOPICS = [
         "body": (
             "`/gadget panel` — click-through menu to equip, unequip, and upgrade.\n\n"
             "Carry **2 at once** — in a patrol battle you get a separate \"Use\" button "
-            "for each, so which two you bring is a real choice. Unlocks by reputation "
-            "level: Web-Shooters (1), Web Grabber (5), Ricochet Web (10), Upshot (15), "
-            "Concussion Burst (20). Each can wear out and break mid-fight."
+            "for each, so which two you bring is a real choice. Unlocks by reputation level: "
+            f"{item_label('web_shooters', 'Web-Shooters')} (1), {item_label('web_grabber', 'Web Grabber')} (5), "
+            f"{item_label('ricochet_web', 'Ricochet Web')} (10), {item_label('upshot', 'Upshot')} (15), "
+            f"{item_label('concussion_burst', 'Concussion Burst')} (20). Each can wear out and break mid-fight."
         ),
     },
     {
@@ -143,7 +145,10 @@ TOPICS = [
         "emoji": icon_emoji("lab") or "🧪",
         "title": "Chem Lab",
         "summary": "Brew the Web-Fluid that fuels /patrol.",
-        "body": "`/lab brew` — start a Web-Fluid batch. This is what fuels /patrol.\n\n`/lab status` / `/lab collect` — check on it, then collect.",
+        "body": (
+            f"`/lab brew` — start a {item_label('web_fluid_vial', 'Web-Fluid')} batch. This is what fuels "
+            "/patrol.\n\n`/lab status` / `/lab collect` — check on it, then collect."
+        ),
     },
     {
         "key": "loop",
@@ -163,14 +168,19 @@ class TopicSelect(discord.ui.Select):
         current = browser._topic()
         options = [
             discord.SelectOption(
-                label=f"{t['emoji']} {t['title']}",
+                label=t["title"],
                 value=t["key"],
                 description=t["summary"],
+                emoji=t["emoji"],
                 default=(t["key"] == browser.selected_key),
             )
             for t in TOPICS
         ]
-        placeholder = f"{current['emoji']} {current['title']}" if current else "Choose a topic..."
+        # Select placeholders are plain text — they can't render custom Discord emoji
+        # markup, so this one deliberately drops the emoji rather than showing the
+        # literal "<:name:id>" string. Moot in practice: once an option is `default`,
+        # Discord shows that option's own label+emoji in the closed box instead.
+        placeholder = current["title"] if current else "Choose a topic..."
         super().__init__(placeholder=placeholder, options=options)
         self.browser = browser
 
@@ -285,8 +295,8 @@ class StartView(discord.ui.DesignerView):
                         (
                             "2. Get out there",
                             "`/patrol` — swing out and see what's happening. Costs a "
-                            "Web-Fluid Vial (or cash if you're out), and crimes turn into "
-                            "a real fight.",
+                            f"{item_label('web_fluid_vial', 'Web-Fluid Vial')} (or cash if you're out), and "
+                            "crimes turn into a real fight.",
                         ),
                         (
                             "3. Everything else",

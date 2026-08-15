@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import InventoryItem, Item, User
 from services.economy import add_wallet
+from utils.icons import item_label
 
 GADGET_CATEGORY = "gadget"
 MAX_UPGRADE_LEVEL = 3
@@ -105,15 +106,18 @@ async def equip_gadget(session: AsyncSession, user: User, gadget_key: str) -> tu
     if item is None or item.category != GADGET_CATEGORY:
         return False, "That's not a gadget."
     if item.unlock_level and user.reputation_level < item.unlock_level:
-        return False, f"{item.name} unlocks at reputation level {item.unlock_level}. You're level {user.reputation_level}."
+        return False, (
+            f"{item_label(item.key, item.name)} unlocks at reputation level {item.unlock_level}. "
+            f"You're level {user.reputation_level}."
+        )
 
     candidates = await _owned_copies(session, user.discord_id, gadget_key)
     if not candidates:
-        return False, f"You don't own a {item.name}. Buy one from /shop first."
+        return False, f"You don't own a {item_label(item.key, item.name)}. Buy one from /shop first."
 
     best = candidates[0]
     if best.equipped:
-        return False, f"{item.name} is already equipped."
+        return False, f"{item_label(item.key, item.name)} is already equipped."
 
     equipped = await list_equipped_gadgets(session, user.discord_id)
     if len(equipped) >= MAX_EQUIPPED_GADGETS:
@@ -125,7 +129,7 @@ async def equip_gadget(session: AsyncSession, user: User, gadget_key: str) -> tu
 
     best.equipped = True
     await session.commit()
-    return True, f"{item.name} equipped ({best.durability}% durability)."
+    return True, f"{item_label(item.key, item.name)} equipped ({best.durability}% durability)."
 
 
 async def unequip_gadget(session: AsyncSession, user: User, gadget_key: str) -> tuple[bool, str]:
@@ -135,9 +139,10 @@ async def unequip_gadget(session: AsyncSession, user: User, gadget_key: str) -> 
         return False, "That gadget isn't equipped."
 
     item = await session.get(Item, gadget_key)
+    display = item_label(item.key, item.name) if item else gadget_key
     match.equipped = False
     await session.commit()
-    return True, f"{item.name if item else gadget_key} unequipped."
+    return True, f"{display} unequipped."
 
 
 async def upgrade_gadget(session: AsyncSession, user: User, gadget_key: str) -> tuple[bool, str]:
@@ -157,7 +162,7 @@ async def upgrade_gadget(session: AsyncSession, user: User, gadget_key: str) -> 
     await add_wallet(session, user, -cost, reason=f"gadget:upgrade:{item.key}")
     match.upgrade_level = next_level
     await session.commit()
-    return True, f"{item.name} upgraded to level {next_level} for ${cost:,}."
+    return True, f"{item_label(item.key, item.name)} upgraded to level {next_level} for ${cost:,}."
 
 
 async def roll_gadget_effect(
@@ -190,7 +195,7 @@ async def roll_gadget_effect(
 
     item = await session.get(Item, target.item_key)
     return GadgetEffectResult(
-        gadget_name=item.name,
+        gadget_name=item_label(item.key, item.name),
         kind=effect["kind"],
         magnitude=effect.get("magnitude"),
         cash_range=effect.get("cash_range"),
@@ -221,4 +226,4 @@ async def roll_gadget_wearout(
 
     item = await session.get(Item, target.item_key)
     await session.delete(target)
-    return item.name if item else target.item_key
+    return item_label(item.key, item.name) if item else target.item_key

@@ -16,7 +16,7 @@ from services.gadget_service import (
     upgrade_gadget,
 )
 from utils.embeds import error_embed
-from utils.icons import emoji
+from utils.icons import emoji, item_label
 from utils.v2_embeds import StaticView, add_field_groups
 
 GADGET_FOOTERS = [
@@ -70,6 +70,7 @@ def _dedupe_options(views: list[OwnedGadgetView], selected_key: str | None) -> l
                 label=view.name,
                 value=view.item_key,
                 description=f"{status}, upgrade lvl {view.upgrade_level}/{MAX_UPGRADE_LEVEL}",
+                emoji=emoji(view.item_key),
                 default=(view.item_key == selected_key),
             )
         )
@@ -172,8 +173,7 @@ class GadgetPanelView(discord.ui.DesignerView):
 
         container = discord.ui.Container()
         if best is not None:
-            item_emoji = emoji(best.item_key)
-            title = f"{item_emoji} {best.name}" if item_emoji else best.name
+            title = item_label(best.item_key, best.name)
         else:
             category_emoji = emoji("gadgets_category")
             title = f"{category_emoji} Your Gadgets" if category_emoji else "Your Gadgets"
@@ -231,7 +231,7 @@ class GadgetCog(commands.Cog):
         stored_fields = []
         for view in views:
             entry = (
-                view.name,
+                item_label(view.item_key, view.name),
                 f"{view.durability}% durability, upgrade level {view.upgrade_level}/{MAX_UPGRADE_LEVEL}",
             )
             (equipped_fields if view.equipped else stored_fields).append(entry)

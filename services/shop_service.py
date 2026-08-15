@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.models import InventoryItem, Item, User
 from services.economy import add_wallet
 from services.inventory_service import add_item
+from utils.icons import item_label
 
 
 async def list_shop_items(session: AsyncSession) -> list[Item]:
@@ -26,15 +27,18 @@ async def buy_item(session: AsyncSession, user: User, item_key: str) -> tuple[bo
         return False, "That's not something the shop sells."
 
     if item.category == "gadget" and item.unlock_level and user.reputation_level < item.unlock_level:
-        return False, f"{item.name} unlocks at reputation level {item.unlock_level}. You're level {user.reputation_level}."
+        return False, (
+            f"{item_label(item.key, item.name)} unlocks at reputation level {item.unlock_level}. "
+            f"You're level {user.reputation_level}."
+        )
 
     if item.category == "tool":
         existing = await _get_tool_row(session, user.discord_id, item_key)
         if existing is not None and existing.equipped:
-            return False, f"You've already got a working {item.name} equipped."
+            return False, f"You've already got a working {item_label(item.key, item.name)} equipped."
 
     if user.wallet < item.price:
-        return False, f"{item.name} costs ${item.price:,} and your wallet's short."
+        return False, f"{item_label(item.key, item.name)} costs ${item.price:,} and your wallet's short."
 
     await add_wallet(session, user, -item.price, reason=f"shop:buy:{item_key}")
 
@@ -71,4 +75,4 @@ async def buy_item(session: AsyncSession, user: User, item_key: str) -> tuple[bo
         await add_item(session, user.discord_id, item_key, 1)
 
     await session.commit()
-    return True, f"Bought {item.name} for ${item.price:,}."
+    return True, f"Bought {item_label(item.key, item.name)} for ${item.price:,}."

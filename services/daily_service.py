@@ -14,6 +14,7 @@ from services.economy import add_reputation, add_wallet
 from services.gadget_service import MAX_UPGRADE_LEVEL, list_equipped_gadgets
 from services.inventory_service import add_item
 from services.loot_tables import rand_range, weighted_choice
+from utils.icons import item_label
 
 DAILY_COMMAND_KEY = "daily"
 DAILY_COOLDOWN_SECONDS = 24 * 60 * 60
@@ -86,7 +87,7 @@ async def _grant_free_gadget_upgrade(session: AsyncSession, user: User) -> str |
     target = random.choice(eligible)
     target.upgrade_level += 1
     item = await session.get(Item, target.item_key)
-    return item.name if item else target.item_key
+    return item_label(target.item_key, item.name) if item else target.item_key
 
 
 async def claim_daily(session: AsyncSession, user: User) -> tuple[bool, str, DailyClaimResult | None]:
@@ -124,17 +125,17 @@ async def claim_daily(session: AsyncSession, user: User) -> tuple[bool, str, Dai
         gift_item_key = gift_entry["item_key"]
         await add_item(session, user.discord_id, gift_item_key, 1)
         item = await session.get(Item, gift_item_key)
-        bonus_flavor = f"A free {item.name} — something for Aunt May or MJ."
+        bonus_flavor = f"A free {item_label(gift_item_key, item.name)} — something for Aunt May or MJ."
     elif bonus_key == "web_fluid":
         qty = rand_range(DAILY_REWARDS["web_fluid_range"])
         await add_item(session, user.discord_id, "web_fluid_vial", qty)
-        bonus_flavor = f"{qty}x Web-Fluid Vial, straight from the lab — on the house."
+        bonus_flavor = f"{qty}x {item_label('web_fluid_vial', 'Web-Fluid Vial')}, straight from the lab — on the house."
     elif bonus_key == "component":
         component_key = random.choice(DAILY_REWARDS["component_table"])
         qty = rand_range(DAILY_REWARDS["component_qty_range"])
         await add_item(session, user.discord_id, component_key, qty)
         item = await session.get(Item, component_key)
-        bonus_flavor = f"{qty}x {item.name} for the workbench."
+        bonus_flavor = f"{qty}x {item_label(component_key, item.name)} for the workbench."
     elif bonus_key == "cash_jackpot":
         jackpot = rand_range(DAILY_REWARDS["cash_jackpot_range"])
         cash += jackpot
@@ -149,7 +150,10 @@ async def claim_daily(session: AsyncSession, user: User) -> tuple[bool, str, Dai
             bonus_flavor = f"No gadget to upgrade right now, so here's ${fallback:,} instead."
     elif bonus_key == "collectible":
         await add_item(session, user.discord_id, "unstable_web_fluid", 1)
-        bonus_flavor = "Extremely rare pull: an Unstable Web-Fluid, straight into your pocket."
+        bonus_flavor = (
+            f"Extremely rare pull: an {item_label('unstable_web_fluid', 'Unstable Web-Fluid')}, "
+            "straight into your pocket."
+        )
     # "none" -> no bonus this time, just the base reward
 
     milestone_label = None

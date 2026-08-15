@@ -7,6 +7,7 @@ from discord.ext import commands
 from db.base import async_session
 from services.economy import deposit, get_or_create_user, withdraw
 from utils.embeds import error_embed
+from utils.icons import item_label
 from utils.item_display import badge
 from utils.v2_embeds import StaticView
 
@@ -96,7 +97,7 @@ class EconomyCog(commands.Cog):
             durability = f" ({durability_val} durability)" if durability_val is not None else ""
             equipped = " — equipped" if equipped_val else ""
             by_category.setdefault(category, []).append(
-                (f"{badge(item_key)}{display_name}", f"x{quantity}{durability}{equipped}")
+                (f"{badge(item_key)}{item_label(item_key, display_name)}", f"x{quantity}{durability}{equipped}")
             )
 
         ordered_categories = [c for c in category_order if c in by_category]

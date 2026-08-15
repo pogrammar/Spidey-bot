@@ -23,7 +23,7 @@ from services.gadget_service import list_all_gadgets
 from services.inventory_service import add_item, get_editable_row, remove_item
 from services.market_service import admin_cancel_listing
 from utils.embeds import base_embed, error_embed
-from utils.icons import thumbnail
+from utils.icons import item_label, thumbnail
 from utils.v2_embeds import StaticView, add_field_groups
 
 ALLY_CHOICES = [discord.OptionChoice(name=name, value=key) for key, name in ALLY_NAMES.items()]
@@ -674,7 +674,7 @@ class AdminCog(commands.Cog):
             await get_or_create_user(session, target.id)
             await add_item(session, target.id, item, quantity)
 
-        await _reply(ctx, f"Gave {target.mention} {quantity}x {item_def.name}.")
+        await _reply(ctx, f"Gave {target.mention} {quantity}x {item_label(item, item_def.name)}.")
 
     @inventory.command(name="remove-item", description="Take an item away.")
     async def remove_item_cmd(
@@ -697,10 +697,12 @@ class AdminCog(commands.Cog):
             removed = await remove_item(session, target.id, item, quantity)
 
         if removed:
-            await _reply(ctx, f"Removed {quantity}x {item_def.name} from {target.mention}.")
+            await _reply(ctx, f"Removed {quantity}x {item_label(item, item_def.name)} from {target.mention}.")
         else:
             await ctx.respond(
-                embed=error_embed(f"{target.mention} doesn't have {quantity}x {item_def.name} unequipped."),
+                embed=error_embed(
+                    f"{target.mention} doesn't have {quantity}x {item_label(item, item_def.name)} unequipped."
+                ),
                 ephemeral=True,
             )
 
@@ -724,7 +726,8 @@ class AdminCog(commands.Cog):
             row = await get_editable_row(session, target.id, item)
             if row is None:
                 await ctx.respond(
-                    embed=error_embed(f"{target.mention} doesn't own a {item_def.name}."), ephemeral=True
+                    embed=error_embed(f"{target.mention} doesn't own a {item_label(item, item_def.name)}."),
+                    ephemeral=True,
                 )
                 return
 
@@ -733,7 +736,7 @@ class AdminCog(commands.Cog):
             await session.commit()
 
         note = " (capped to max)" if item_def.max_durability is not None and capped != value else ""
-        await _reply(ctx, f"{target.mention}'s {item_def.name} durability set to {capped}%{note}.")
+        await _reply(ctx, f"{target.mention}'s {item_label(item, item_def.name)} durability set to {capped}%{note}.")
 
     @inventory.command(name="set-upgrade", description="Force a gadget's upgrade level.")
     async def set_upgrade(
@@ -755,13 +758,14 @@ class AdminCog(commands.Cog):
             row = await get_editable_row(session, target.id, item)
             if row is None:
                 await ctx.respond(
-                    embed=error_embed(f"{target.mention} doesn't own a {item_def.name}."), ephemeral=True
+                    embed=error_embed(f"{target.mention} doesn't own a {item_label(item, item_def.name)}."),
+                    ephemeral=True,
                 )
                 return
             row.upgrade_level = level
             await session.commit()
 
-        await _reply(ctx, f"{target.mention}'s {item_def.name} upgrade level set to {level}.")
+        await _reply(ctx, f"{target.mention}'s {item_label(item, item_def.name)} upgrade level set to {level}.")
 
     # ---- cooldown --------------------------------------------------------------
 

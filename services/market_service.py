@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.models import InventoryItem, Item, MarketListing, User
 from services.economy import add_wallet
 from services.inventory_service import add_item, remove_item
+from utils.icons import item_label
 
 MAX_ACTIVE_LISTINGS_PER_USER = 10
 NOT_TRADEABLE_CATEGORIES = ("tool", "gadget")
@@ -66,7 +67,7 @@ async def create_listing(
         return False, f"You've already got {MAX_ACTIVE_LISTINGS_PER_USER} listings up. Cancel one first."
 
     if not await remove_item(session, seller.discord_id, item_key, quantity):
-        return False, f"You don't have {quantity}x {item.name}."
+        return False, f"You don't have {quantity}x {item_label(item.key, item.name)}."
 
     listing = MarketListing(
         seller_id=seller.discord_id,
@@ -76,7 +77,10 @@ async def create_listing(
     )
     session.add(listing)
     await session.commit()
-    return True, f"Listed {quantity}x {item.name} at ${price_per_unit:,} each. Listing ID: **#{listing.id}** — cancel with /market cancel."
+    return True, (
+        f"Listed {quantity}x {item_label(item.key, item.name)} at ${price_per_unit:,} each. "
+        f"Listing ID: **#{listing.id}** — cancel with /market cancel."
+    )
 
 
 async def cancel_listing(session: AsyncSession, seller: User, listing_id: int) -> tuple[bool, str]:
@@ -100,7 +104,7 @@ async def admin_cancel_listing(session: AsyncSession, listing_id: int) -> tuple[
         return False, "That listing doesn't exist."
 
     item = await session.get(Item, listing.item_key)
-    item_name = item.name if item else listing.item_key
+    item_name = item_label(listing.item_key, item.name) if item else listing.item_key
     seller_id = listing.seller_id
     quantity = listing.quantity
 
@@ -127,7 +131,7 @@ async def buy_listing(session: AsyncSession, buyer: User, listing_id: int) -> tu
     await add_item(session, buyer.discord_id, listing.item_key, listing.quantity)
 
     item = await session.get(Item, listing.item_key)
-    message = f"Bought {listing.quantity}x {item.name} for ${total_cost:,}."
+    message = f"Bought {listing.quantity}x {item_label(listing.item_key, item.name)} for ${total_cost:,}."
 
     await session.delete(listing)
     await session.commit()

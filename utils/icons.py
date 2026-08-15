@@ -108,3 +108,13 @@ def emoji(key: str) -> str | None:
     uploaded as an application emoji yet — same 'miss means render without it,
     never an error' contract as icon_file()."""
     return EMOJI.get(key)
+
+
+def item_label(key: str, name: str) -> str:
+    """An item's display name prefixed with its own custom emoji, if one's been
+    uploaded — the standard way an item name should read anywhere in game text
+    (embeds, flavor lines, field values). Falls back to the bare name otherwise.
+    Not for places that can't render custom emoji markup at all (autocomplete
+    OptionChoice labels, Select placeholders, Modal titles) — use plain text there."""
+    e = emoji(key)
+    return f"{e} {name}" if e else name

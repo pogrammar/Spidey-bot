@@ -9,7 +9,7 @@ from db.models import Item
 from services.economy import get_or_create_user
 from services.shop_service import buy_item, list_shop_items
 from utils.embeds import error_embed
-from utils.icons import emoji
+from utils.icons import emoji, item_label
 from utils.v2_embeds import StaticView, add_field_groups
 
 # Section grouping for /shop browse. Keeps the dropdown small and scannable instead
@@ -55,6 +55,7 @@ def _shop_options(items: list[Item], selected_key: str | None) -> list[discord.S
             label=f"{item.name} — ${item.price:,}",
             value=item.key,
             description=(item.description[:100] if item.description else None),
+            emoji=emoji(item.key),
             default=(item.key == selected_key),
         )
         for item in items
@@ -148,8 +149,7 @@ class ShopBrowseView(discord.ui.DesignerView):
 
         container = discord.ui.Container()
         if item is not None:
-            item_emoji = emoji(item.key)
-            title = f"{item_emoji} {item.name}" if item_emoji else item.name
+            title = item_label(item.key, item.name)
         else:
             title = f"General Store — {label}"
         if banner:
@@ -200,8 +200,11 @@ class ShopCog(commands.Cog):
         def item_field(item: Item) -> tuple[str, str]:
             if _is_locked(item, user.reputation_level):
                 lock_emoji = emoji("locked") or "🔒"
-                return (item.name, f"{lock_emoji} (gadget not unlocked — needs reputation level {item.unlock_level})")
-            return (f"{item.name} — ${item.price:,}", item.description)
+                return (
+                    item_label(item.key, item.name),
+                    f"{lock_emoji} (gadget not unlocked — needs reputation level {item.unlock_level})",
+                )
+            return (f"{item_label(item.key, item.name)} — ${item.price:,}", item.description)
 
         field_groups = []
         for label, categories in SHOP_SECTIONS:

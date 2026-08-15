@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.models import User
 from services.economy import add_wallet
 from services.inventory_service import get_quantity, remove_item
+from utils.icons import item_label
 
 REPAIR_COST_PER_POINT = 6
 SPANDEX_ITEM_KEY = "spandex_fabric"
@@ -39,14 +40,16 @@ async def repair_suit(session: AsyncSession, user: User) -> RepairResult:
 
     if await get_quantity(session, user.discord_id, SPANDEX_ITEM_KEY) < 1:
         return RepairResult(
-            False, "You're out of Spandex Fabric. Scavenge some on patrol, or /shop buy spandex_fabric."
+            False,
+            f"You're out of {item_label(SPANDEX_ITEM_KEY, 'Spandex Fabric')}. Scavenge some on patrol, "
+            "or /shop buy spandex_fabric.",
         )
 
     if needs_electronics and await get_quantity(session, user.discord_id, ELECTRONICS_ITEM_KEY) < 1:
         return RepairResult(
             False,
-            "Damage this bad needs Micro-Electronics you don't have. Scavenge some on patrol, "
-            "or /shop buy micro_electronics.",
+            f"Damage this bad needs {item_label(ELECTRONICS_ITEM_KEY, 'Micro-Electronics')} you don't have. "
+            "Scavenge some on patrol, or /shop buy micro_electronics.",
         )
 
     cash_cost = missing * REPAIR_COST_PER_POINT
@@ -77,14 +80,16 @@ async def repair_readiness_warning(session: AsyncSession, user: User) -> str | N
 
     if await get_quantity(session, user.discord_id, SPANDEX_ITEM_KEY) < 1:
         return (
-            f"Suit integrity's at {user.suit_integrity}% and you're out of Spandex Fabric. Keep "
-            "patrolling and you'll be fighting crime with zero protection — or /shop buy spandex_fabric."
+            f"Suit integrity's at {user.suit_integrity}% and you're out of "
+            f"{item_label(SPANDEX_ITEM_KEY, 'Spandex Fabric')}. Keep patrolling and you'll be fighting "
+            "crime with zero protection — or /shop buy spandex_fabric."
         )
 
     if needs_electronics and await get_quantity(session, user.discord_id, ELECTRONICS_ITEM_KEY) < 1:
         return (
-            f"Suit integrity's at {user.suit_integrity}% and this damage needs Micro-Electronics you "
-            "don't have. Check the Trade Post, or /shop buy micro_electronics."
+            f"Suit integrity's at {user.suit_integrity}% and this damage needs "
+            f"{item_label(ELECTRONICS_ITEM_KEY, 'Micro-Electronics')} you don't have. Check the Trade Post, "
+            "or /shop buy micro_electronics."
         )
 
     return None

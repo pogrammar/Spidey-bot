@@ -8,6 +8,7 @@ from db.base import async_session
 from services.brewing_service import BREW_COST, collect_brew, get_brew_status, start_brew
 from services.economy import get_or_create_user
 from utils.embeds import error_embed
+from utils.icons import item_label
 from utils.v2_embeds import StaticView
 
 LAB_ICON = "lab"
@@ -78,12 +79,13 @@ class LabCog(commands.Cog):
 
         fields = []
         if result.mutated:
+            mutation_label = item_label(MUTATION_ICON, "Unstable Web-Fluid")
             fields.append((
-                "Mutation!", "One vial came out wrong — an Unstable Web-Fluid. Might be worth something.",
+                "Mutation!", f"One vial came out wrong — an {mutation_label}. Might be worth something.",
             ))
         view = StaticView(
             "Chem Lab — Batch Ready",
-            f"You collect {result.vials}x Web-Fluid Vial.",
+            f"You collect {result.vials}x {item_label(VIAL_ICON, 'Web-Fluid Vial')}.",
             fields=fields,
             footer_lines=[random.choice(LAB_FOOTERS)],
             icon_key=MUTATION_ICON if result.mutated else VIAL_ICON,

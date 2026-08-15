@@ -26,7 +26,7 @@ from services.patrol_service import (
 )
 from services.suit_service import repair_readiness_warning
 from utils.embeds import error_embed
-from utils.icons import emoji, thumbnail
+from utils.icons import emoji, item_label, thumbnail
 from utils.v2_embeds import StaticView, add_field_groups
 
 # Round decisions get a full 30 seconds — this is a choice, not a reflex test. Outcomes
@@ -88,7 +88,10 @@ class GadgetActionButton(discord.ui.Button):
 
     def __init__(self, gadget_key: str, gadget_name: str, battle_view: "PatrolBattleView", *, disabled: bool):
         super().__init__(
-            label=gadget_name, emoji=emoji("gadget_use") or "🔧", style=discord.ButtonStyle.success, disabled=disabled
+            label=gadget_name,
+            emoji=emoji(gadget_key) or emoji("gadget_use") or "🔧",
+            style=discord.ButtonStyle.success,
+            disabled=disabled,
         )
         self.gadget_key = gadget_key
         self.battle_view = battle_view
@@ -210,7 +213,8 @@ class PatrolBattleView(discord.ui.DesignerView):
         field_groups = [("Outcome", outcome_fields)]
 
         if report.photo_banked:
-            caught = "Camera broke mid-shot!" if report.camera_broke else "Photo saved for the Bugle."
+            camera_label = item_label("camera", "Camera")
+            caught = f"{camera_label} broke mid-shot!" if report.camera_broke else "Photo saved for the Bugle."
             camera_emoji = emoji("camera")
             heading = f"{camera_emoji} {report.photo_quality.title()} Photo Op" if camera_emoji else f"{report.photo_quality.title()} Photo Op"
             field_groups.append((heading, [("", caught)]))
@@ -223,7 +227,8 @@ class PatrolBattleView(discord.ui.DesignerView):
             field_groups.append(("🧵 Homemade Suit", [("", value)]))
 
         if report.item_found:
-            field_groups.append(("Scavenged", [("", report.item_found.replace("_", " ").title())]))
+            found_label = item_label(report.item_found, report.item_found.replace("_", " ").title())
+            field_groups.append(("Scavenged", [("", found_label)]))
 
         if report.gadgets_broken:
             value = f"{', '.join(report.gadgets_broken)} took too much punishment and gave out. Check /shop."
@@ -297,12 +302,13 @@ class PatrolBattleView(discord.ui.DesignerView):
 
 
 def _noncombat_view(result: PatrolResult, suit_warning: str | None) -> StaticView:
+    fluid_field_name = item_label("web_fluid_vial", "Web Fluid")
     fields = []
     if result.web_fluid_used:
-        fields.append(("Web Fluid", "-1 vial"))
+        fields.append((fluid_field_name, "-1 vial"))
     else:
         fields.append((
-            "Web Fluid",
+            fluid_field_name,
             f"Out of vials — improvised with store-bought fluid: -${result.web_fluid_tax:,}. "
             f"Brew more with /lab brew.",
         ))
@@ -385,7 +391,11 @@ class PatrolCog(commands.Cog):
                 available_gadgets=available_gadgets,
             )
 
-        fluid_note = "" if start.web_fluid_used else f" (out of Web-Fluid — cost you ${start.web_fluid_tax:,})"
+        fluid_note = (
+            ""
+            if start.web_fluid_used
+            else f" (out of {item_label('web_fluid_vial', 'Web-Fluid')} — cost you ${start.web_fluid_tax:,})"
+        )
         view = PatrolBattleView(state, ctx.author.id, intro_banner=f"{start.flavor}{fluid_note}")
         await ctx.respond(view=view, files=view.files)
         view.message = await ctx.interaction.original_response()

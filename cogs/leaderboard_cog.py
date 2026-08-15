@@ -24,7 +24,7 @@ class CategorySelect(discord.ui.Select):
     def __init__(self, panel: "LeaderboardView"):
         options = [
             discord.SelectOption(
-                label=f"{meta['emoji']} {meta['label']}", value=key, default=(key == panel.category)
+                label=meta["label"], value=key, emoji=meta["emoji"], default=(key == panel.category)
             )
             for key, meta in CATEGORIES.items()
         ]
