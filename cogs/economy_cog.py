@@ -7,7 +7,7 @@ from discord.ext import commands
 from db.base import async_session
 from services.economy import deposit, get_or_create_user, withdraw
 from utils.embeds import error_embed
-from utils.icons import item_label
+from utils.icons import emoji, item_label
 from utils.item_display import badge
 from utils.v2_embeds import StaticView
 
@@ -53,8 +53,11 @@ class EconomyCog(commands.Cog):
                 (
                     "Standing",
                     [
-                        ("Reputation", f"Level {user.reputation_level} ({user.reputation_xp} XP)"),
-                        ("Suit Integrity", f"{user.suit_integrity}%"),
+                        (
+                            f"{emoji('reputation') or ''} Reputation".strip(),
+                            f"Level {user.reputation_level} ({user.reputation_xp} XP)",
+                        ),
+                        (f"{emoji('suit_integrity') or ''} Suit Integrity".strip(), f"{user.suit_integrity}%"),
                     ],
                 ),
             ],
@@ -95,10 +98,13 @@ class EconomyCog(commands.Cog):
         by_category: dict[str, list[tuple[str, str]]] = {}
         for item_key, display_name, category, quantity, durability_val, equipped_val in rows:
             durability = f" ({durability_val} durability)" if durability_val is not None else ""
-            equipped = " — equipped" if equipped_val else ""
-            by_category.setdefault(category, []).append(
-                (f"{badge(item_key)}{item_label(item_key, display_name)}", f"x{quantity}{durability}{equipped}")
-            )
+            name = f"{badge(item_key)}{item_label(item_key, display_name)}"
+            if category == "gadget":
+                grade = "Battle-Grade" if equipped_val else "Swinging-Grade"
+                name = f"{name} — {grade}"
+            elif equipped_val:
+                name = f"{name} — Equipped"
+            by_category.setdefault(category, []).append((name, f"x{quantity}{durability}"))
 
         ordered_categories = [c for c in category_order if c in by_category]
         ordered_categories += [c for c in by_category if c not in category_order]

@@ -55,7 +55,7 @@ class DailyCog(commands.Cog):
                 "Rewards",
                 [
                     ("Cash", f"+${result.cash_gained:,}"),
-                    ("Reputation XP", f"+{result.xp_gained}"),
+                    (f"{emoji('reputation') or ''} Reputation XP".strip(), f"+{result.xp_gained}"),
                     ("Longest Streak", f"{result.longest_streak} days"),
                 ],
             )

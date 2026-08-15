@@ -206,10 +206,10 @@ class PatrolBattleView(discord.ui.DesignerView):
         container.add_section(discord.ui.TextDisplay(f"# Patrol Battle — {tier} — Over\n{headline}"), accessory=accessory)
         self.files = [file] if file else []
 
-        outcome_fields = [("Reputation XP", f"+{report.xp_gained}")]
+        outcome_fields = [(f"{emoji('reputation') or ''} Reputation XP".strip(), f"+{report.xp_gained}")]
         if report.cash_gained:
             outcome_fields.append(("Cash", f"+${report.cash_gained:,}"))
-        outcome_fields.append(("Suit Damage", f"-{report.suit_damage}%"))
+        outcome_fields.append((f"{emoji('suit_damage') or ''} Suit Damage".strip(), f"-{report.suit_damage}%"))
         field_groups = [("Outcome", outcome_fields)]
 
         if report.photo_banked:
@@ -314,7 +314,7 @@ def _noncombat_view(result: PatrolResult, suit_warning: str | None) -> StaticVie
         ))
 
     xp_note = " (thriving allies bonus)" if result.ally_xp_bonus else ""
-    fields.append(("Reputation XP", f"+{result.xp_gained}{xp_note}"))
+    fields.append((f"{emoji('reputation') or ''} Reputation XP".strip(), f"+{result.xp_gained}{xp_note}"))
 
     if result.cash_gained:
         fields.append(("Cash", f"+${result.cash_gained:,}"))

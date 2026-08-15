@@ -14,7 +14,7 @@ from services.suit_service import (
     repair_suit,
 )
 from utils.embeds import error_embed
-from utils.icons import item_label
+from utils.icons import emoji, item_label
 from utils.v2_embeds import StaticView
 
 WORKBENCH_FOOTERS = [
@@ -39,7 +39,7 @@ class SuitCog(commands.Cog):
             electronics = await get_quantity(session, user.discord_id, ELECTRONICS_ITEM_KEY)
 
         missing = 100 - user.suit_integrity
-        suit_fields = [("Suit Integrity", f"{user.suit_integrity}%")]
+        suit_fields = [(f"{emoji('suit_integrity') or ''} Suit Integrity".strip(), f"{user.suit_integrity}%")]
         if missing > 0:
             cost = missing * REPAIR_COST_PER_POINT
             extra = f" + 1 {item_label(ELECTRONICS_ITEM_KEY, 'Micro-Electronics')}" if missing >= ELECTRONICS_THRESHOLD else ""

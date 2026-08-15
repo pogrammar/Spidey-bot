@@ -13,12 +13,25 @@ from utils.icons import emoji, item_label
 from utils.v2_embeds import StaticView, add_field_groups
 
 # Section grouping for /shop browse. Keeps the dropdown small and scannable instead
-# of dumping every item — tools, gifts, and gadgets — into one long list.
+# of dumping every item — tools, gifts, and gadgets — into one long list. Name and
+# icon are kept separate (not pre-joined into one decorated string) because the
+# decorated form only renders correctly in message text (headers, field headings) —
+# a Select's placeholder and closed-box text are plain strings that can't render
+# custom Discord emoji markup, so those call sites need the bare name instead.
 SHOP_SECTIONS = [
-    (f"{emoji('gear_category') or '🛠️'} Gear", ("tool", "component")),
-    (f"{emoji('gifts_category') or '🎁'} Gifts", ("gift",)),
-    (f"{emoji('gadgets_category') or '🦾'} Gadgets", ("gadget",)),
+    ("Gear", "gear_category", ("tool", "component")),
+    ("Gifts", "gifts_category", ("gift",)),
+    ("Gadgets", "gadgets_category", ("gadget",)),
 ]
+_SECTION_FALLBACK_EMOJI = {"gear_category": "🛠️", "gifts_category": "🎁", "gadgets_category": "🦾"}
+
+
+def _section_label(name: str, icon_key: str) -> str:
+    """Decorated section name — only for contexts that render real message
+    content (TextDisplay headers, field-group headings), never a Select
+    placeholder or OptionChoice label."""
+    icon = emoji(icon_key) or _SECTION_FALLBACK_EMOJI.get(icon_key, "")
+    return f"{icon} {name}".strip()
 
 SHOP_FOOTERS = [
     "The guy behind the counter has seen weirder purchases.",
@@ -87,8 +100,8 @@ class NextSectionButton(discord.ui.Button):
 
 
 class ShopItemSelect(discord.ui.Select):
-    def __init__(self, panel: "ShopBrowseView", label: str, options: list[discord.SelectOption]):
-        super().__init__(placeholder=f"Choose an item in {label}...", options=options)
+    def __init__(self, panel: "ShopBrowseView", section_name: str, options: list[discord.SelectOption]):
+        super().__init__(placeholder=f"Choose an item in {section_name}...", options=options)
         self.panel = panel
 
     async def callback(self, interaction: discord.Interaction):
@@ -115,7 +128,7 @@ class ShopBrowseView(discord.ui.DesignerView):
     """Prev/Next buttons flip between category sections (Gear / Gifts / Gadgets), each
     with its own small dropdown + Buy button — easier to scan than one long list."""
 
-    def __init__(self, sections: list[tuple[str, list[Item]]], author_id: int, timeout: float = 180):
+    def __init__(self, sections: list[tuple[str, str, list[Item]]], author_id: int, timeout: float = 180):
         super().__init__(timeout=timeout)
         self.sections = sections
         self.author_id = author_id
@@ -144,14 +157,14 @@ class ShopBrowseView(discord.ui.DesignerView):
 
     def _render(self, banner: str | None = None) -> None:
         self.clear_items()
-        label, items = self.sections[self.section_index]
+        name, icon_key, items = self.sections[self.section_index]
         item = self._selected_item(items)
 
         container = discord.ui.Container()
         if item is not None:
             title = item_label(item.key, item.name)
         else:
-            title = f"General Store — {label}"
+            title = f"General Store — {_section_label(name, icon_key)}"
         if banner:
             body = banner
         elif item is not None:
@@ -179,7 +192,7 @@ class ShopBrowseView(discord.ui.DesignerView):
             PrevSectionButton(self, disabled=self.section_index == 0),
             NextSectionButton(self, disabled=self.section_index == len(self.sections) - 1),
         )
-        container.add_row(ShopItemSelect(self, label, _shop_options(items, self.selected_key)))
+        container.add_row(ShopItemSelect(self, name, _shop_options(items, self.selected_key)))
         container.add_row(BuyButton(self, item=item))
 
         self.add_item(container)
@@ -207,10 +220,10 @@ class ShopCog(commands.Cog):
             return (f"{item_label(item.key, item.name)} — ${item.price:,}", item.description)
 
         field_groups = []
-        for label, categories in SHOP_SECTIONS:
+        for name, icon_key, categories in SHOP_SECTIONS:
             section_items = [item for item in items if item.category in categories]
             if section_items:
-                field_groups.append((label, [item_field(item) for item in section_items]))
+                field_groups.append((_section_label(name, icon_key), [item_field(item) for item in section_items]))
 
         view = StaticView(
             "General Store", field_groups=field_groups, footer_lines=[random.choice(SHOP_FOOTERS)], icon_key="store"
@@ -229,10 +242,10 @@ class ShopCog(commands.Cog):
             return
 
         sections = []
-        for label, categories in SHOP_SECTIONS:
+        for name, icon_key, categories in SHOP_SECTIONS:
             section_items = [item for item in buyable if item.category in categories]
             if section_items:
-                sections.append((label, section_items))
+                sections.append((name, icon_key, section_items))
 
         view = ShopBrowseView(sections, ctx.author.id)
         await ctx.respond(view=view)

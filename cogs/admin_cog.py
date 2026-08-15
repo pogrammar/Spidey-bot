@@ -23,7 +23,7 @@ from services.gadget_service import list_all_gadgets
 from services.inventory_service import add_item, get_editable_row, remove_item
 from services.market_service import admin_cancel_listing
 from utils.embeds import base_embed, error_embed
-from utils.icons import item_label, thumbnail
+from utils.icons import emoji, item_label, thumbnail
 from utils.v2_embeds import StaticView, add_field_groups
 
 ALLY_CHOICES = [discord.OptionChoice(name=name, value=key) for key, name in ALLY_NAMES.items()]
@@ -257,8 +257,11 @@ class UserInfoView(discord.ui.DesignerView):
             (
                 "Profile",
                 [
-                    ("Reputation", f"Level {profile.reputation_level} ({profile.reputation_xp:,} XP)"),
-                    ("Suit Integrity", f"{profile.suit_integrity}%"),
+                    (
+                        f"{emoji('reputation') or ''} Reputation".strip(),
+                        f"Level {profile.reputation_level} ({profile.reputation_xp:,} XP)",
+                    ),
+                    (f"{emoji('suit_integrity') or ''} Suit Integrity".strip(), f"{profile.suit_integrity}%"),
                     ("Crime Level", f"{profile.crime_level}/100"),
                     ("Eviction Meter", f"{profile.eviction_meter}/100"),
                     ("Rent", rent_display),
@@ -569,7 +572,8 @@ class AdminCog(commands.Cog):
             profile.reputation_xp = xp
             await session.commit()
             level = profile.reputation_level
-        await _reply(ctx, f"{target.mention}'s reputation set to {xp:,} XP (Level {level}).")
+        rep_label = f"{emoji('reputation') or ''} reputation".strip()
+        await _reply(ctx, f"{target.mention}'s {rep_label} set to {xp:,} XP (Level {level}).")
 
     @profile.command(name="set-suit", description="Set suit integrity.")
     async def set_suit(
@@ -585,7 +589,8 @@ class AdminCog(commands.Cog):
             profile = await get_or_create_user(session, target.id)
             profile.suit_integrity = value
             await session.commit()
-        await _reply(ctx, f"{target.mention}'s suit integrity set to {value}%.")
+        suit_label = f"{emoji('suit_integrity') or ''} suit integrity".strip()
+        await _reply(ctx, f"{target.mention}'s {suit_label} set to {value}%.")
 
     @profile.command(name="set-crime-level", description="Set city crime level.")
     async def set_crime_level(

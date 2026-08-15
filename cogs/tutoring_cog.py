@@ -9,6 +9,7 @@ from services.cooldowns import format_remaining, get_remaining_seconds, set_cool
 from services.economy import get_or_create_user
 from services.tutoring_service import TUTORING_LOCK_SECONDS, run_tutoring_session
 from utils.embeds import error_embed
+from utils.icons import emoji
 from utils.v2_embeds import StaticView
 
 TUTORING_FOOTERS = [
@@ -56,7 +57,7 @@ class TutoringCog(commands.Cog):
         xp_note = " (thriving allies bonus)" if result.ally_xp_bonus else ""
         earnings_fields = [
             ("Cash", f"+${result.cash:,}{cash_note}"),
-            ("Reputation XP", f"+{result.xp}{xp_note}"),
+            (f"{emoji('reputation') or ''} Reputation XP".strip(), f"+{result.xp}{xp_note}"),
         ]
         cost_fields = [
             (
