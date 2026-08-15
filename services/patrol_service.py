@@ -141,7 +141,7 @@ def _roll_patrol_outcome(crime_level: int) -> dict:
     biased = []
     for entry in LOOT_TABLES["patrol"]:
         weight = entry["weight"]
-        if entry["key"] in ("crime_bronze", "crime_gold"):
+        if entry["key"] in ("crime_bronze", "crime_silver", "crime_gold"):
             weight += crime_level * CRIME_LEVEL_WEIGHT_BONUS
         biased.append({**entry, "weight": weight})
     return weighted_choice(biased)

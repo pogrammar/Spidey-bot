@@ -33,7 +33,11 @@ BASELINE_ROUNDS = 3  # what the base_hp values below, and every other balance nu
 # doesn't correct for that — empirically verified via binary search across the full
 # level range that these two slopes are what it actually takes to hold each tier's
 # win rate steady as round count changes, not just scale HP with round count.
-ROUND_HP_SLOPE = {"crime_bronze": 0.36, "crime_gold": 0.27}
+# crime_silver's slope (0.315) is a straight linear interpolation between bronze and
+# gold, not independently binary-searched like those two were — close enough to hold
+# win rate roughly steady across round counts, but revisit if silver's win rate drifts
+# noticeably as round count varies.
+ROUND_HP_SLOPE = {"crime_bronze": 0.36, "crime_silver": 0.315, "crime_gold": 0.27}
 
 ENEMY_STATS = {
     "crime_bronze": {
@@ -50,6 +54,21 @@ ENEMY_STATS = {
         "photo_quality": "bronze",
         "component_key": "spandex_fabric",
         "base_drop_chance": 0.25,
+    },
+    "crime_silver": {
+        "names": [
+            "an armed shopkeeper's nightmare",
+            "a shakedown crew",
+            "a knife-happy car-jacker",
+            "a jumpy pawn-shop robber",
+            "a gang enforcer having a bad night",
+        ],
+        "base_hp": 38,
+        "base_damage": [6, 12],
+        "base_hit_chance": 0.52,
+        "photo_quality": "silver",
+        "component_key": "micro_electronics",
+        "base_drop_chance": 0.15,
     },
     "crime_gold": {
         "names": [
@@ -69,7 +88,7 @@ ENEMY_STATS = {
 }
 
 ATTACK_HIT_CHANCE = 0.75
-ATTACK_DAMAGE = {"crime_bronze": [10, 18], "crime_gold": [12, 22]}
+ATTACK_DAMAGE = {"crime_bronze": [10, 18], "crime_silver": [11, 20], "crime_gold": [12, 22]}
 # Enemy HP scales faster than attack damage (90% of the rate) — deliberate, winning
 # still gets *harder* at higher levels. What changed: raw reputation-level difficulty
 # used to feed straight into enemy HP/damage uncapped, which meant gold crimes hit a

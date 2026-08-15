@@ -29,7 +29,7 @@
     },
     {
       "key": "crime_bronze",
-      "weight": 22,
+      "weight": 15,
       "flavor": [
         "You stop a mugging in an alley off 5th.",
         "A break-in at a bodega — you swing in just in time.",
@@ -45,8 +45,25 @@
       "component_drop": {"item_key": "spandex_fabric", "chance": 0.25}
     },
     {
+      "key": "crime_silver",
+      "weight": 12,
+      "flavor": [
+        "A break-in gone loud at a pawn shop — this guy's not backing down.",
+        "Somebody's running a protection racket on 9th, and they don't scare easy.",
+        "A car-jacking in progress, and this one's got a knife on him.",
+        "A small gang's cornered someone in a parking garage.",
+        "An armed robbery at a corner store, and the guy's jumpy.",
+        "A shakedown crew leaning on a shop owner two blocks over."
+      ],
+      "xp": [14, 24],
+      "suit_damage": [11, 20],
+      "photo_quality": "silver",
+      "camera_break_chance": 0.14,
+      "component_drop": {"item_key": "micro_electronics", "chance": 0.15}
+    },
+    {
       "key": "crime_gold",
-      "weight": 13,
+      "weight": 8,
       "flavor": [
         "A full-blown brawl with a low-level enforcer downtown.",
         "Somebody's boosting a truck full of Oscorp hardware and it goes loud fast.",
@@ -109,6 +126,7 @@
   },
   "bugle_payouts": {
     "bronze": [50, 150],
+    "silver": [150, 350],
     "gold": [300, 600]
   },
   "jjj_multiplier": [0.8, 1.3]

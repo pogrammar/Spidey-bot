@@ -46,6 +46,17 @@ UNPROTECTED_FLAVOR = [
     "The good suit's in the shop — you're stuck with the sewing-kit special.",
 ]
 
+TIER_KEYS = {
+    "crime_bronze": ("Bronze", "tier_bronze"),
+    "crime_silver": ("Silver", "tier_silver"),
+    "crime_gold": ("Gold", "tier_gold"),
+}
+TIER_BUTTON_STYLES = {
+    "Gold": discord.ButtonStyle.success,
+    "Silver": discord.ButtonStyle.primary,
+    "Bronze": discord.ButtonStyle.secondary,
+}
+
 
 def _bar(current: int, maximum: int, filled_emoji: str, segments: int = 10) -> str:
     if maximum <= 0:
@@ -118,7 +129,7 @@ class PatrolBattleView(discord.ui.DesignerView):
         return True
 
     def _tier(self) -> tuple[str, str]:
-        return ("Gold", "tier_gold") if self.state.outcome_key == "crime_gold" else ("Bronze", "tier_bronze")
+        return TIER_KEYS[self.state.outcome_key]
 
     def _header_accessory(
         self, icon_key: str, fallback_label: str, fallback_style: discord.ButtonStyle
@@ -143,7 +154,7 @@ class PatrolBattleView(discord.ui.DesignerView):
         if banner:
             header_text += f"\n{banner}"
         accessory, file = self._header_accessory(
-            tier_icon_key, tier, discord.ButtonStyle.success if tier == "Gold" else discord.ButtonStyle.secondary
+            tier_icon_key, tier, TIER_BUTTON_STYLES.get(tier, discord.ButtonStyle.secondary)
         )
         container.add_section(discord.ui.TextDisplay(header_text), accessory=accessory)
         self.files = [file] if file else []
@@ -361,7 +372,7 @@ class PatrolCog(commands.Cog):
                 return
 
             start = await begin_patrol(session, user)
-            is_crime = start.outcome["key"] in ("crime_bronze", "crime_gold")
+            is_crime = start.outcome["key"] in ("crime_bronze", "crime_silver", "crime_gold")
 
             if not is_crime:
                 result = await finish_noncombat_patrol(session, user, start)
