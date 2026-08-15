@@ -6,6 +6,8 @@ from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, Strin
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from utils.leveling import level_for_xp
+
 
 class Base(AsyncAttrs, DeclarativeBase):
     """AsyncAttrs lets us do `await some_obj.awaitable_attrs.relationship_name`
@@ -49,7 +51,7 @@ class User(Base):
 
     @property
     def reputation_level(self) -> int:
-        return 1 + self.reputation_xp // 100
+        return level_for_xp(self.reputation_xp)
 
     @property
     def reputation_multiplier(self) -> float:
