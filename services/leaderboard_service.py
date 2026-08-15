@@ -7,8 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import User
 from utils.icons import emoji as _icon_emoji
+from utils.leveling import level_for_xp
 
-LEADERBOARD_LIMIT = 10
+LEADERBOARD_LIMIT = 20
 
 # Each category pairs a SQL sort expression (for the top-N query) with a plain-Python
 # equivalent (for scoring a single already-fetched User, when computing "your rank").
@@ -28,7 +29,7 @@ CATEGORIES = {
         "emoji": _icon_emoji("reputation") or "⭐",
         "column": User.reputation_xp,
         "value_of": lambda u: u.reputation_xp,
-        "format": lambda v: f"Level {1 + v // 100} ({v:,} XP)",
+        "format": lambda v: f"Level {level_for_xp(v)} ({v:,} XP)",
     },
     "streak": {
         "label": "Daily Streak",

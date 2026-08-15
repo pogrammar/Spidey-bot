@@ -12,6 +12,8 @@ MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
 
 CATEGORY_ICON_KEYS = {"wealth": "money", "reputation": "reputation", "streak": "streak"}
 
+LEADERBOARD_PAGE_SIZE = 5  # 4 pages of 5 = the top 20 fetched by get_leaderboard
+
 LEADERBOARD_FOOTERS = [
     "J. Jonah Jameson refuses to run this as a story. Still true though.",
     "Somewhere, someone is furiously refreshing this.",
@@ -33,9 +35,35 @@ class CategorySelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         self.panel.category = self.values[0]
+        self.panel.page = 0
         async with async_session() as session:
             await self.panel._render(session)
         await interaction.response.edit_message(view=self.panel, files=self.panel.files, attachments=[])
+
+
+class PrevPageButton(discord.ui.Button):
+    def __init__(self, panel: "LeaderboardView", *, disabled: bool):
+        super().__init__(label="Previous", emoji="◀", style=discord.ButtonStyle.secondary, disabled=disabled)
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        self.panel.page -= 1
+        async with async_session() as session:
+            await self.panel._render(session)
+        # Same category, same icon — no need to touch files/attachments on this edit.
+        await interaction.response.edit_message(view=self.panel)
+
+
+class NextPageButton(discord.ui.Button):
+    def __init__(self, panel: "LeaderboardView", *, disabled: bool):
+        super().__init__(label="Next", emoji="▶", style=discord.ButtonStyle.secondary, disabled=disabled)
+        self.panel = panel
+
+    async def callback(self, interaction: discord.Interaction):
+        self.panel.page += 1
+        async with async_session() as session:
+            await self.panel._render(session)
+        await interaction.response.edit_message(view=self.panel)
 
 
 class LeaderboardView(discord.ui.DesignerView):
@@ -43,6 +71,7 @@ class LeaderboardView(discord.ui.DesignerView):
         super().__init__(timeout=timeout)
         self.author_id = author_id
         self.category = category
+        self.page = 0
         self.message: discord.Message | None = None
         self.files: list[discord.File] = []
 
@@ -65,9 +94,16 @@ class LeaderboardView(discord.ui.DesignerView):
         self.clear_items()
         meta = CATEGORIES[self.category]
         entries = await get_leaderboard(session, self.category)
+        total_pages = max(1, -(-len(entries) // LEADERBOARD_PAGE_SIZE))  # ceil division
+        self.page = max(0, min(self.page, total_pages - 1))
+        start = self.page * LEADERBOARD_PAGE_SIZE
+        page_entries = entries[start : start + LEADERBOARD_PAGE_SIZE]
 
         container = discord.ui.Container()
-        header_text = f"# Leaderboard\n{meta['emoji']} {meta['label']} — Top {len(entries) or 10}"
+        header_text = (
+            f"# Leaderboard\n{meta['emoji']} {meta['label']} — Top {len(entries)} "
+            f"(Page {self.page + 1}/{total_pages})"
+        )
         result = thumbnail(CATEGORY_ICON_KEYS.get(self.category, ""))
         if result is not None:
             thumb, file = result
@@ -88,7 +124,7 @@ class LeaderboardView(discord.ui.DesignerView):
         else:
             lines = [
                 f"{MEDALS.get(i, f'{i}.')} <@{entry.discord_id}> — {meta['format'](entry.value)}"
-                for i, entry in enumerate(entries, start=1)
+                for i, entry in enumerate(page_entries, start=start + 1)
             ]
             container.add_text("\n".join(lines))
 
@@ -103,6 +139,10 @@ class LeaderboardView(discord.ui.DesignerView):
         container.add_text("\n".join(f"-# {line}" for line in footer_lines))
 
         container.add_separator()
+        container.add_row(
+            PrevPageButton(self, disabled=self.page == 0),
+            NextPageButton(self, disabled=self.page >= total_pages - 1),
+        )
         container.add_row(CategorySelect(self))
 
         self.add_item(container)
