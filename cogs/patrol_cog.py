@@ -37,10 +37,16 @@ from utils.v2_embeds import StaticView, add_field_groups
 # specifically so server/network lag can never be the reason someone loses a fight.
 BATTLE_ROUND_TIMEOUT = 30.0
 
-# Covers the worst case (max(ROUND_RANGE)=7 rounds x 30s + margin) so a second
-# /patrol can't sneak in and start an overlapping fight. Reset to the normal 30s the
-# moment the battle ends.
-BATTLE_LOCK_SECONDS = 250
+# The lock covering a battle's whole possible window (so a second /patrol can't
+# sneak in and start an overlapping fight) is computed per-fight from its actual
+# round count (BATTLE_ROUND_TIMEOUT * state.max_rounds), not a fixed constant —
+# a fixed number here previously went stale the moment boss fights (always 10
+# rounds) shipped, since it had only ever been sized for crime tiers' 5-7 round
+# range. Reset to the normal PATROL_COOLDOWN_SECONDS the instant the battle
+# actually ends (see PatrolBattleView._advance/on_timeout) — this margin only
+# matters as a safety ceiling for while the fight is still theoretically open,
+# never something a player actually has to wait out.
+BATTLE_LOCK_MARGIN_SECONDS = 40
 
 # The advanced suit is still trashed — you went out in the old homemade one instead.
 UNPROTECTED_FLAVOR = [
@@ -471,11 +477,6 @@ class PatrolCog(commands.Cog):
                 await ctx.respond(view=noncombat_view, files=noncombat_view.files)
                 return
 
-            # Crime/boss encounter — lock /patrol for the whole possible battle window
-            # so a second call can't start an overlapping fight; reset to normal once
-            # this ends.
-            await set_cooldown(session, user.discord_id, "patrol", BATTLE_LOCK_SECONDS)
-
             base_xp = compute_base_xp(start)
             gadget_source = list_all_owned_gadgets if boss_bracket else list_equipped_gadgets
             equipped = await gadget_source(session, user.discord_id)
@@ -493,6 +494,12 @@ class PatrolCog(commands.Cog):
                 available_gadgets=available_gadgets,
                 enemy_name=boss_name(boss_bracket) if boss_bracket else None,
             )
+
+            # Lock /patrol for this fight's actual worst-case window (see
+            # BATTLE_LOCK_MARGIN_SECONDS above) so a second call can't start an
+            # overlapping fight.
+            lock_seconds = round(BATTLE_ROUND_TIMEOUT * state.max_rounds) + BATTLE_LOCK_MARGIN_SECONDS
+            await set_cooldown(session, user.discord_id, "patrol", lock_seconds)
 
         fluid_note = (
             ""
