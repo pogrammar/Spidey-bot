@@ -103,16 +103,22 @@ async def add_bank(session: AsyncSession, user: User, amount: int, reason: str) 
     return actual_delta
 
 
-async def add_reputation(session: AsyncSession, user: User, xp: int) -> None:
+async def add_reputation(session: AsyncSession, user: User, xp: int) -> int:
     """Clamped at the next uncleared boss gate — a losing or below-gate patrol still
     grants XP normally, but nothing pushes you past a gate you haven't beaten yet.
-    Also cut by CRIME_XP_PENALTY_MULTIPLIER while crime_level is high."""
+    Also cut by CRIME_XP_PENALTY_MULTIPLIER while crime_level is high. Returns the
+    actual XP applied (may be less than requested if capped or penalized) — same
+    "return what really happened" contract as add_wallet, so callers can display
+    the real number instead of the pre-adjustment roll."""
     gained = max(0, xp)
     if user.crime_level >= HIGH_CRIME_THRESHOLD:
         gained = round(gained * CRIME_XP_PENALTY_MULTIPLIER)
     cap = xp_for_level(next_boss_gate_level(user))
+    before = user.reputation_xp
     user.reputation_xp = min(user.reputation_xp + gained, cap)
+    actual_delta = user.reputation_xp - before
     await session.commit()
+    return actual_delta
 
 
 def _upgrade_bank_capacity(user: User, extra_needed: int = 0) -> int:

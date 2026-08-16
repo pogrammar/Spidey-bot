@@ -301,7 +301,6 @@ async def finish_noncombat_patrol(session: AsyncSession, user: User, start: Patr
     result = PatrolResult(
         outcome_key=outcome["key"],
         flavor=start.flavor,
-        xp_gained=xp,
         web_fluid_used=start.web_fluid_used,
         web_fluid_tax=start.web_fluid_tax,
         ally_xp_bonus=start.xp_multiplier > 1.0,
@@ -312,17 +311,21 @@ async def finish_noncombat_patrol(session: AsyncSession, user: User, start: Patr
         result.cash_gained = rand_range(outcome["cash"])
         await add_wallet(session, user, result.cash_gained, reason=f"patrol:{outcome['key']}")
 
-    await add_reputation(session, user, xp)
+    # The actual applied amount, not the pre-penalty/pre-cap roll — a crime penalty
+    # or a boss-gate ceiling can both silently shrink this below `xp`.
+    result.xp_gained = await add_reputation(session, user, xp)
     crime_decay = rand_range(CRIME_LEVEL_DECAY_RANGE)
     user.crime_level = max(0, user.crime_level - crime_decay)
     result.crime_level_delta = -crime_decay
 
     hazard = await roll_hazard(session, user.discord_id)
     if hazard is not None:
-        hazard_cash = rand_range(hazard["cash"])
-        await add_wallet(session, user, hazard_cash, reason=f"hazard:{hazard['key']}")
+        rolled_hazard_cash = rand_range(hazard["cash"])
+        # add_wallet clamps at 0 and returns what actually happened — a broke
+        # player's wallet was never really overdrawn, the display just used to
+        # show the raw roll instead of the real (possibly smaller) deduction.
         result.hazard_flavor = hazard["flavor"]
-        result.hazard_cash = hazard_cash
+        result.hazard_cash = await add_wallet(session, user, rolled_hazard_cash, reason=f"hazard:{hazard['key']}")
 
     result.crime_level = user.crime_level
     await session.commit()

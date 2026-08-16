@@ -565,7 +565,9 @@ async def finalize_battle(session: AsyncSession, user: User, state: BattleState)
 
     if cash:
         await add_wallet(session, user, cash, reason=f"patrol_battle:{state.outcome_key}")
-    await add_reputation(session, user, xp)
+    # The actual applied amount, not the pre-penalty/pre-cap roll — a crime penalty
+    # or a boss-gate ceiling can both silently shrink this below `xp`.
+    actual_xp_gained = await add_reputation(session, user, xp)
 
     boss_cash_reward = 0
     boss_new_level = None
@@ -597,15 +599,18 @@ async def finalize_battle(session: AsyncSession, user: User, state: BattleState)
     hazard_cash = 0
     hazard = await roll_hazard(session, user.discord_id)
     if hazard is not None:
-        hazard_cash = rand_range(hazard["cash"])
-        await add_wallet(session, user, hazard_cash, reason=f"hazard:{hazard['key']}")
+        rolled_hazard_cash = rand_range(hazard["cash"])
+        # add_wallet clamps at 0 and returns what actually happened — a broke
+        # player's wallet was never really overdrawn, the display just used to
+        # show the raw roll instead of the real (possibly smaller) deduction.
+        hazard_cash = await add_wallet(session, user, rolled_hazard_cash, reason=f"hazard:{hazard['key']}")
         hazard_flavor = hazard["flavor"]
 
     await session.commit()
 
     return BattleReport(
         won_clean=won_clean,
-        xp_gained=xp,
+        xp_gained=actual_xp_gained,
         cash_gained=cash,
         suit_damage=state.total_suit_damage,
         photo_banked=photo_banked,

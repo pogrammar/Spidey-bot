@@ -64,12 +64,15 @@ async def run_tutoring_session(session: AsyncSession, user: User) -> TutoringRes
 
     user.crime_level = min(100, user.crime_level + crime_rise)
     await add_wallet(session, user, cash, reason="tutoring:session")
-    await add_reputation(session, user, xp)
+    # The actual applied amount, not the pre-penalty/pre-cap roll — a crime penalty
+    # (crime_level was just raised above, same session) or a boss-gate ceiling can
+    # both silently shrink this below `xp`.
+    actual_xp = await add_reputation(session, user, xp)
     await session.commit()
 
     return TutoringResult(
         cash=cash,
-        xp=xp,
+        xp=actual_xp,
         crime_rise=crime_rise,
         new_crime_level=user.crime_level,
         ally_xp_bonus=xp_multiplier > 1.0,

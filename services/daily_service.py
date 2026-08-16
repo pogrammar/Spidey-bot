@@ -178,7 +178,9 @@ async def claim_daily(session: AsyncSession, user: User) -> tuple[bool, str, Dai
             await add_item(session, user.discord_id, "unstable_web_fluid", 1)
 
     await add_wallet(session, user, cash, reason="daily:claim")
-    await add_reputation(session, user, xp)
+    # The actual applied amount, not the pre-penalty/pre-cap roll — a crime penalty
+    # or a boss-gate ceiling can both silently shrink this below `xp`.
+    actual_xp = await add_reputation(session, user, xp)
     await set_cooldown(session, user.discord_id, DAILY_COMMAND_KEY, DAILY_COOLDOWN_SECONDS)
     await session.commit()
 
@@ -190,7 +192,7 @@ async def claim_daily(session: AsyncSession, user: User) -> tuple[bool, str, Dai
             longest_streak=user.daily_longest_streak,
             streak_continued=streak_continued,
             cash_gained=cash,
-            xp_gained=xp,
+            xp_gained=actual_xp,
             bonus_key=bonus_key,
             bonus_flavor=bonus_flavor,
             milestone_label=milestone_label,
