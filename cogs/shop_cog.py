@@ -10,7 +10,7 @@ from services.economy import get_or_create_user
 from services.shop_service import buy_item, list_shop_items
 from utils.embeds import error_embed
 from utils.icons import emoji, item_label
-from utils.v2_embeds import StaticView, add_field_groups
+from utils.v2_embeds import PaginatedView, StaticView, add_field_groups
 
 # Section grouping for /shop browse. Keeps the dropdown small and scannable instead
 # of dumping every item — tools, gifts, and gadgets — into one long list. Name and
@@ -43,6 +43,32 @@ SHOP_FOOTERS = [
 
 def _is_locked(item: Item, user_level: int) -> bool:
     return item.category == "gadget" and item.unlock_level is not None and user_level < item.unlock_level
+
+
+def _item_field(item: Item, user_level: int) -> tuple[str, str]:
+    if _is_locked(item, user_level):
+        lock_emoji = emoji("locked") or "🔒"
+        return (
+            item_label(item.key, item.name),
+            f"{lock_emoji} (gadget not unlocked — needs reputation level {item.unlock_level})",
+        )
+    return (f"{item_label(item.key, item.name)} — ${item.price:,}", item.description)
+
+
+def _build_shop_pages(items: list[Item], user_level: int) -> list[dict]:
+    """One page per section (Gear / Gifts / Gadgets) — the catalog's grown past
+    fitting comfortably in one message, and this mirrors the section split
+    /shop browse already uses instead of inventing a separate fixed-item-count
+    page size."""
+    pages = []
+    for name, icon_key, categories in SHOP_SECTIONS:
+        section_items = [item for item in items if item.category in categories]
+        if section_items:
+            pages.append({
+                "title": f"General Store — {_section_label(name, icon_key)}",
+                "fields": [_item_field(item, user_level) for item in section_items],
+            })
+    return pages
 
 
 async def shop_item_autocomplete(ctx: discord.AutocompleteContext) -> list[discord.OptionChoice]:
@@ -210,25 +236,22 @@ class ShopCog(commands.Cog):
             user = await get_or_create_user(session, ctx.author.id)
             items = await list_shop_items(session)
 
-        def item_field(item: Item) -> tuple[str, str]:
-            if _is_locked(item, user.reputation_level):
-                lock_emoji = emoji("locked") or "🔒"
-                return (
-                    item_label(item.key, item.name),
-                    f"{lock_emoji} (gadget not unlocked — needs reputation level {item.unlock_level})",
-                )
-            return (f"{item_label(item.key, item.name)} — ${item.price:,}", item.description)
+        pages = _build_shop_pages(items, user.reputation_level)
+        footer_lines = [random.choice(SHOP_FOOTERS)]
 
-        field_groups = []
-        for name, icon_key, categories in SHOP_SECTIONS:
-            section_items = [item for item in items if item.category in categories]
-            if section_items:
-                field_groups.append((_section_label(name, icon_key), [item_field(item) for item in section_items]))
+        if not pages:
+            view = StaticView("General Store", "Nothing's in stock right now.", footer_lines=footer_lines, icon_key="store")
+            await ctx.respond(view=view, files=view.files)
+            return
 
-        view = StaticView(
-            "General Store", field_groups=field_groups, footer_lines=[random.choice(SHOP_FOOTERS)], icon_key="store"
-        )
-        await ctx.respond(view=view, files=view.files)
+        if len(pages) == 1:
+            view = StaticView(pages[0]["title"], fields=pages[0]["fields"], footer_lines=footer_lines, icon_key="store")
+            await ctx.respond(view=view, files=view.files)
+            return
+
+        view = PaginatedView(pages, author_id=ctx.author.id, footer_lines=footer_lines)
+        await ctx.respond(view=view)
+        view.message = await ctx.interaction.original_response()
 
     @shop.command(name="browse", description="Browse the store section by section and buy with one click.")
     async def browse(self, ctx: discord.ApplicationContext):
