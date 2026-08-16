@@ -19,7 +19,15 @@ from services.loot_tables import LOOT_TABLES, rand_range, weighted_choice
 PATROL_COOLDOWN_SECONDS = 30
 CAMERA_ITEM_KEY = "camera"
 CRIME_LEVEL_WEIGHT_BONUS = 0.3  # each point of crime_level nudges crime-outcome odds up
-CRIME_LEVEL_DECAY_RANGE = [3, 6]  # patrolling calms the city back down
+CRIME_LEVEL_DECAY_RANGE = [3, 6]  # patrolling calms the city back down — non-combat outcomes
+
+# Combat outcomes use a bigger split instead of the flat range above — actually
+# stopping a crime should calm the city more than showing up and losing. Uniform
+# across every crime tier and boss fights alike (see battle_service.finalize_battle)
+# — no tier-specific bump, since boss wins are rare enough that a special case for
+# them would barely ever be felt next to routine crime-tier wins/losses.
+CRIME_LEVEL_DECAY_RANGE_WIN = [6, 10]
+CRIME_LEVEL_DECAY_RANGE_LOSS = [1, 3]
 
 # every patrol burns web fluid to get around — no vials on hand means paying cash
 # instead (store-bought substitute fluid, worse and pricier), which is what actually

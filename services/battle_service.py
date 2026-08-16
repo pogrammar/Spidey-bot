@@ -12,7 +12,8 @@ from services.gadget_service import list_equipped_gadgets, roll_gadget_effect, r
 from services.inventory_service import add_item
 from services.loot_tables import rand_range
 from services.patrol_service import (
-    CRIME_LEVEL_DECAY_RANGE,
+    CRIME_LEVEL_DECAY_RANGE_LOSS,
+    CRIME_LEVEL_DECAY_RANGE_WIN,
     get_equipped_camera,
     roll_donation,
     roll_hazard,
@@ -588,7 +589,7 @@ async def finalize_battle(session: AsyncSession, user: User, state: BattleState)
         await add_wallet(session, user, donation_cash, reason=f"donation:{donation['key']}")
         donation_flavor = donation["flavor"]
 
-    crime_decay = rand_range(CRIME_LEVEL_DECAY_RANGE)
+    crime_decay = rand_range(CRIME_LEVEL_DECAY_RANGE_WIN if won_clean else CRIME_LEVEL_DECAY_RANGE_LOSS)
     user.crime_level = max(0, user.crime_level - crime_decay)
     crime_level_delta = -crime_decay
 
