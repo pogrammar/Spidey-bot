@@ -92,6 +92,25 @@ async def list_equipped_gadgets(session: AsyncSession, user_id: int) -> list[Inv
     return list((await session.execute(stmt)).scalars())
 
 
+async def list_all_owned_gadgets(session: AsyncSession, user_id: int) -> list[InventoryItem]:
+    """Boss fights only — every distinct gadget the player owns gets a button, not
+    just the 2 equipped ones (see MAX_EQUIPPED_GADGETS), so a maxed-out loadout is
+    actually worth something at the fights that matter most. One row per item_key
+    (the best copy — highest upgrade level, then highest durability — if they own
+    more than one), same convention as _owned_copies()."""
+    stmt = (
+        select(InventoryItem)
+        .join(Item, InventoryItem.item_key == Item.key)
+        .where(InventoryItem.user_id == user_id, Item.category == GADGET_CATEGORY)
+        .order_by(InventoryItem.item_key, InventoryItem.upgrade_level.desc(), InventoryItem.durability.desc())
+    )
+    rows = list((await session.execute(stmt)).scalars())
+    best: dict[str, InventoryItem] = {}
+    for row in rows:
+        best.setdefault(row.item_key, row)
+    return list(best.values())
+
+
 async def _owned_copies(session: AsyncSession, user_id: int, gadget_key: str) -> list[InventoryItem]:
     stmt = (
         select(InventoryItem)
@@ -166,14 +185,15 @@ async def upgrade_gadget(session: AsyncSession, user: User, gadget_key: str) -> 
 
 
 async def roll_gadget_effect(
-    session: AsyncSession, user_id: int, gadget_key: str | None = None
+    session: AsyncSession, user_id: int, gadget_key: str | None = None, all_owned: bool = False
 ) -> GadgetEffectResult | None:
     """Rolls whether a gadget's effect fires. Pass gadget_key when the player is
     choosing which one to use (battle); leave it None for passive contexts (the
     /tutoring and /bugle "close call" events), which pick randomly among whatever's
     equipped. Returns None if nothing's equipped, the requested one isn't equipped,
-    or the roll simply didn't hit."""
-    equipped = await list_equipped_gadgets(session, user_id)
+    or the roll simply didn't hit. all_owned=True (boss fights only) searches every
+    owned gadget instead of just the 2 equipped ones."""
+    equipped = await (list_all_owned_gadgets(session, user_id) if all_owned else list_equipped_gadgets(session, user_id))
     if not equipped:
         return None
 
@@ -203,12 +223,17 @@ async def roll_gadget_effect(
 
 
 async def roll_gadget_wearout(
-    session: AsyncSession, user_id: int, difficulty_multiplier: float, gadget_key: str | None = None
+    session: AsyncSession,
+    user_id: int,
+    difficulty_multiplier: float,
+    gadget_key: str | None = None,
+    all_owned: bool = False,
 ) -> str | None:
     """Chance for a gadget to break. Pass gadget_key for the one just used in battle;
     leave None for passive contexts, which pick randomly among whatever's equipped.
-    Returns the gadget's name if it broke, else None."""
-    equipped = await list_equipped_gadgets(session, user_id)
+    Returns the gadget's name if it broke, else None. all_owned=True (boss fights
+    only) searches every owned gadget instead of just the 2 equipped ones."""
+    equipped = await (list_all_owned_gadgets(session, user_id) if all_owned else list_equipped_gadgets(session, user_id))
     if not equipped:
         return None
 

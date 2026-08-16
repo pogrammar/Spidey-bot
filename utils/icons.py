@@ -73,6 +73,7 @@ EMOJI: dict[str, str] = {
     "store": "<:store:1538072490373423154>",
     "spandex_fabric": "<:spandex_fabric:1538072488024481802>",
     "tier_silver": "<:silver_tier:1538072485701099560>",
+    "tier_boss": "<:tier_boss:1538251150128849027>",
     "ricochet_web": "<:ricochet_web:1538072483431845929>",
     "retreat": "<:retreat:1538072481288691864>",
     "reputation": "<:reputation_point:1538072479099133992>",

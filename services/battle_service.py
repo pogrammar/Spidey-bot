@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import PendingPhoto, User
-from services.economy import add_reputation, add_wallet
+from services.economy import add_reputation, add_wallet, next_boss_gate_level
 from services.gadget_service import list_equipped_gadgets, roll_gadget_effect, roll_gadget_wearout
 from services.inventory_service import add_item
 from services.loot_tables import rand_range
@@ -17,12 +17,17 @@ from services.patrol_service import (
     roll_donation,
     roll_hazard,
 )
+from utils.leveling import xp_for_level
 
 # Round count is rolled per-battle (see start_battle) instead of fixed, for pacing
 # variety — but it's picked once up front and shown to the player from round 1, so
 # there's never hidden information mid-fight, only variety between fights.
 ROUND_RANGE = [5, 6, 7]
 BASELINE_ROUNDS = 3  # what the base_hp values below, and every other balance number, were tuned against
+
+# Boss fights don't roll a round count — always exactly 10, no variance, so the
+# fight itself reads as a real set-piece rather than a longer crime encounter.
+BOSS_ROUND_COUNT = 10
 
 # How much extra enemy HP (beyond straight difficulty scaling) each round beyond
 # BASELINE_ROUNDS adds, per tier: hp_ratio = 1 + slope * (num_rounds - BASELINE_ROUNDS).
@@ -36,8 +41,10 @@ BASELINE_ROUNDS = 3  # what the base_hp values below, and every other balance nu
 # crime_silver's slope (0.315) is a straight linear interpolation between bronze and
 # gold, not independently binary-searched like those two were — close enough to hold
 # win rate roughly steady across round counts, but revisit if silver's win rate drifts
-# noticeably as round count varies.
-ROUND_HP_SLOPE = {"crime_bronze": 0.36, "crime_silver": 0.315, "crime_gold": 0.27}
+# noticeably as round count varies. "boss" is 0 — round count never varies for boss
+# fights (always BOSS_ROUND_COUNT), so there's no variance for this slope to correct
+# for; base_hp below was binary-searched directly against the fixed 10-round fight.
+ROUND_HP_SLOPE = {"crime_bronze": 0.36, "crime_silver": 0.315, "crime_gold": 0.27, "boss": 0.0}
 
 ENEMY_STATS = {
     "crime_bronze": {
@@ -85,10 +92,47 @@ ENEMY_STATS = {
         "component_key": "micro_electronics",
         "base_drop_chance": 0.3,
     },
+    # Boss fights are triggered directly (see begin_boss_patrol / at_boss_gate),
+    # never rolled from the patrol table — "names" isn't used, start_battle gets an
+    # explicit enemy_name override instead (the roster in patrol_service.py, picked
+    # deterministically by which gate is active).
+    #
+    # Unlike every other tier, suit integrity IS your HP here — hitting 0% mid-fight
+    # is an immediate loss (see PatrolBattleView._advance's "suit_depleted" branch in
+    # cogs/patrol_cog.py), not just cosmetic damage. That makes enemy hit_chance and
+    # damage a direct survival threat, not only a DPS-race backdrop, which is the
+    # main lever that makes these genuinely hard rather than a bigger crime_gold.
+    # Binary-searched (see scratch/boss_tune2.py) against the fixed 10-round fight
+    # (BOSS_ROUND_COUNT) with ALL owned gadgets usable (not just the 2-equipped
+    # loadout — see resolve_gadget's all_owned flag below) and a policy that uses
+    # defensive gadgets (web_shooters, concussion_burst) proactively rather than
+    # just round-robining everything — a real "use the right gadget at the right
+    # time" playstyle matters a lot here. At the frozen max difficulty (level 100 —
+    # see patrol_service.boss_difficulty_level): a run with zero gadgets is
+    # essentially unwinnable (~0-1%) past the first boss, a realistic
+    # gadget-for-your-bracket loadout at upgrade level 1 sits around 17-25%, and a
+    # fully-owned, fully-upgraded kit lands ~70-75% — hard, but clearly worth
+    # investing in. The very first boss (bracket 1, only 2 gadgets unlocked yet) is
+    # noticeably softer at ~58-60% regardless of upgrade level, since there's only
+    # so much kit available that early.
+    "boss": {
+        "names": ["a real threat"],
+        "base_hp": 100,
+        "base_damage": [12, 22],
+        "base_hit_chance": 0.58,
+        "photo_quality": "gold",
+        "component_key": "micro_electronics",
+        "base_drop_chance": 0.4,
+    },
 }
 
 ATTACK_HIT_CHANCE = 0.75
-ATTACK_DAMAGE = {"crime_bronze": [10, 18], "crime_silver": [11, 20], "crime_gold": [12, 22]}
+ATTACK_DAMAGE = {"crime_bronze": [10, 18], "crime_silver": [11, 20], "crime_gold": [12, 22], "boss": [12, 22]}
+
+# Flat, guaranteed reward for beating a boss (never rolled from the fight itself,
+# unlike crime-tier XP/cash) — scaled by the same difficulty curve as everything
+# else, so a level-20 boss pays more than the level-5 one.
+BOSS_CASH_RANGE = [300, 500]
 # Enemy HP scales faster than attack damage (90% of the rate) — deliberate, winning
 # still gets *harder* at higher levels. What changed: raw reputation-level difficulty
 # used to feed straight into enemy HP/damage uncapped, which meant gold crimes hit a
@@ -303,6 +347,8 @@ class BattleReport:
     hazard_flavor: str | None
     hazard_cash: int
     crime_level: int
+    boss_cash_reward: int = 0
+    boss_new_level: int | None = None
 
 
 def start_battle(
@@ -312,11 +358,12 @@ def start_battle(
     base_xp: int,
     base_cash: int,
     available_gadgets: list[tuple[str, str]],
+    enemy_name: str | None = None,
 ) -> BattleState:
     stats = ENEMY_STATS[outcome_key]
     combat_difficulty = _combat_difficulty(difficulty)
 
-    num_rounds = random.choice(ROUND_RANGE)
+    num_rounds = BOSS_ROUND_COUNT if outcome_key == "boss" else random.choice(ROUND_RANGE)
     hp_ratio = 1 + ROUND_HP_SLOPE[outcome_key] * (num_rounds - BASELINE_ROUNDS)
     enemy_hp = round(stats["base_hp"] * combat_difficulty * hp_ratio)
 
@@ -334,7 +381,7 @@ def start_battle(
         # this later and are meant to keep climbing with real level, unlike the
         # win/loss combat stats above which use the soft-capped value.
         difficulty=difficulty,
-        enemy_name=random.choice(stats["names"]),
+        enemy_name=enemy_name or random.choice(stats["names"]),
         enemy_hp=enemy_hp,
         enemy_max_hp=enemy_hp,
         enemy_damage_range=enemy_damage_range,
@@ -400,8 +447,9 @@ def resolve_evade(state: BattleState) -> str:
 
 
 async def resolve_gadget(session: AsyncSession, user_id: int, state: BattleState, gadget_key: str) -> str:
-    effect = await roll_gadget_effect(session, user_id, gadget_key)
-    broken = await roll_gadget_wearout(session, user_id, state.difficulty, gadget_key)
+    all_owned = state.outcome_key == "boss"
+    effect = await roll_gadget_effect(session, user_id, gadget_key, all_owned=all_owned)
+    broken = await roll_gadget_wearout(session, user_id, state.difficulty, gadget_key, all_owned=all_owned)
     if broken:
         state.broken_gadget_keys.add(gadget_key)
         state.gadgets_broken.append(broken)
@@ -517,6 +565,20 @@ async def finalize_battle(session: AsyncSession, user: User, state: BattleState)
         await add_wallet(session, user, cash, reason=f"patrol_battle:{state.outcome_key}")
     await add_reputation(session, user, xp)
 
+    boss_cash_reward = 0
+    boss_new_level = None
+    if state.outcome_key == "boss" and won_clean:
+        # Beating a boss doesn't earn its way through patrol XP — it's a flat
+        # promotion to the very next level's floor (no partial progress carried
+        # over) plus a guaranteed cash reward, on top of whatever the fight itself
+        # already paid out above.
+        cleared_gate = next_boss_gate_level(user)
+        user.boss_clears += 1
+        user.reputation_xp = xp_for_level(cleared_gate + 1)
+        boss_new_level = cleared_gate + 1
+        boss_cash_reward = round(rand_range(BOSS_CASH_RANGE) * state.difficulty)
+        await add_wallet(session, user, boss_cash_reward, reason="patrol_battle:boss_clear")
+
     donation_flavor = None
     donation_cash = 0
     donation = roll_donation()
@@ -553,4 +615,6 @@ async def finalize_battle(session: AsyncSession, user: User, state: BattleState)
         hazard_flavor=hazard_flavor,
         hazard_cash=hazard_cash,
         crime_level=user.crime_level,
+        boss_cash_reward=boss_cash_reward,
+        boss_new_level=boss_new_level,
     )

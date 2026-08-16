@@ -12,7 +12,7 @@ from services.ally_service import (
     get_current_happiness,
     reputation_xp_multiplier,
 )
-from services.economy import add_reputation, add_wallet
+from services.economy import BOSS_LEVEL_INTERVAL, add_reputation, add_wallet, next_boss_gate_level
 from services.inventory_service import remove_item
 from services.loot_tables import LOOT_TABLES, rand_range, weighted_choice
 
@@ -41,6 +41,171 @@ DIFFICULTY_PER_LEVEL = 0.05
 
 def difficulty_multiplier(level: int) -> float:
     return 1 + DIFFICULTY_PER_LEVEL * (level - 1)
+
+
+# Named threats guarding each boss gate, in order — one every 5 reputation levels,
+# level 5 through level 100. Cycles back to the top with a "Round N" suffix if a
+# save ever climbs past the whole roster (see boss_difficulty_level below for why
+# that can happen without the fight getting any harder). Boss encounters are
+# triggered directly (see begin_boss_patrol), never rolled from the weighted patrol
+# table, so there's no xp/cash range here — reward is a flat level-up + cash on a
+# clean win, handled by battle_service.finalize_battle.
+BOSS_ROSTER = [
+    "Chameleon",
+    "Hammerhead",
+    "Tombstone",
+    "the Shocker",
+    "the Scorpion",
+    "the Vulture",
+    "the Lizard",
+    "Rhino",
+    "Morbius",
+    "Kraven",
+    "Electro",
+    "Sandman",
+    "Hobgoblin",
+    "Mysterio",
+    "Mister Negative",
+    "Doctor Octopus",
+    "the Green Goblin",
+    "Venom",
+    "Carnage",
+    "the Sinister Six",
+]
+
+# Boss fight difficulty stops climbing once you're past the last named boss (level
+# 100) — leveling itself never stops, but nothing makes the fight itself any harder
+# past this point. Nothing in the UI ever announces the cap; it's silent.
+MAX_NAMED_BOSS_BRACKET = len(BOSS_ROSTER)
+MAX_BOSS_DIFFICULTY_LEVEL = BOSS_LEVEL_INTERVAL * MAX_NAMED_BOSS_BRACKET
+
+# "The boss is waiting for you" flavor, themed per villain — shown both when a
+# fight's about to start and when the player's turned away for not being at 100%
+# suit integrity yet. Keyed by the roster name above.
+BOSS_FLAVOR: dict[str, list[str]] = {
+    "Chameleon": [
+        "Someone's been walking around Queens wearing your face. Chameleon wants a word — in person, for once.",
+        "A dozen witnesses swear they saw you somewhere you weren't. Chameleon's done pretending to be anyone else tonight.",
+        "He's stopped hiding. Chameleon's waiting on a rooftop off Roosevelt, and this time he's just himself.",
+    ],
+    "Hammerhead": [
+        "Hammerhead's called a meeting at the old rail yard, and you're the only invite that matters.",
+        "A steel skull and a Prohibition-era grudge — Hammerhead's holding down a warehouse on the docks, waiting.",
+        "The old families don't forget. Hammerhead's parked outside a shuttered social club, and he's not leaving without a fight.",
+    ],
+    "Tombstone": [
+        "Tombstone's cleared out a whole block downtown. He's waiting in the middle of it, arms crossed.",
+        "Word is Tombstone's taken over a parking garage on 9th — and he's expecting company.",
+        "Pale, huge, and patient — Tombstone's standing in an empty lot like he owns the block. He might.",
+    ],
+    "the Shocker": [
+        "Shocker's cracking a vault downtown, gauntlets humming, and he already knows you're coming.",
+        "An armored car's been flipped on its side outside a bank — Shocker's standing on top of it, waiting.",
+        "The vibrations start before you even land. Shocker's rigged the whole block to shake.",
+    ],
+    "the Scorpion": [
+        "He's been tailing you for weeks. Scorpion's done following — he's waiting on the fire escape outside your window.",
+        "A tail whips into view before you even see him. Scorpion's picked the rooftop, and he's picked you.",
+        "Gargan's finally stopped playing PI. Scorpion's coiled on a water tower, waiting for you to land.",
+    ],
+    "the Vulture": [
+        "Toomes has circled the same junkyard for three nights straight. Vulture's waiting on the scrap heap.",
+        "Something huge is circling above the bridge cables. Vulture's not hiding tonight.",
+        "A rooftop full of stolen tech and one very old, very patient man. Vulture's waiting for you up there.",
+    ],
+    "the Lizard": [
+        "Something's moving through the sewers under ESU, and it used to be a person. Lizard's waiting below.",
+        "Dr. Connors' lab is trashed, and something with claws left through the vents. It's waiting in the tunnels.",
+        "The reptile house at the zoo went quiet an hour ago. Lizard's in there now, and it's not an animal problem.",
+    ],
+    "Rhino": [
+        "A construction site on 3rd is a pile of rubble, and Rhino's standing in the middle of it, breathing hard.",
+        "He put a bus through a storefront just to get your attention. Rhino's waiting in the wreckage.",
+        "The ground's still shaking. Rhino charged straight through six blocks and stopped right where you'd find him.",
+    ],
+    "Morbius": [
+        "A blood bank's been cleaned out overnight. Morbius is waiting in the dark storage room, still hungry.",
+        "Something pale and fast has been seen on hospital rooftops. Morbius doesn't need an invitation.",
+        "The night shift at Metro-General won't go back in. Morbius is still down in the basement.",
+    ],
+    "Kraven": [
+        "Kravinoff's turned Central Park into his hunting ground, and he's been tracking you all week.",
+        "A trophy wall's missing one name. Kraven's waiting in the treeline, rifle down, hands empty — he wants this fair.",
+        "He's been calling it 'the hunt of a lifetime' to anyone who'll listen. Kraven's waiting, and he means it.",
+    ],
+    "Electro": [
+        "Every light on the block just died at once. Electro's standing in the dark substation, glowing.",
+        "A blackout's spreading from Midtown outward, and it's got a source. Electro's at the center of it.",
+        "The power grid's screaming. Electro's perched on a transformer station, arcing like a storm cloud.",
+    ],
+    "Sandman": [
+        "A construction site collapsed into itself — into him. Sandman's waiting in the rubble, grinning.",
+        "The beach at Coney Island is one giant Flint Marko right now. Sandman's not going anywhere.",
+        "Half a concrete mixer's worth of sand just stood up and started walking. Sandman's waiting downtown.",
+    ],
+    "Hobgoblin": [
+        "A gala on Fifth Avenue just got crashed by something on a glider. Hobgoblin's circling the rooftop.",
+        "Kingsley's dropped the fashion-designer act. Hobgoblin's waiting on the penthouse terrace, pumpkin bombs in hand.",
+        "Every window on the 40th floor just blew out at once. Hobgoblin's up there, laughing about it.",
+    ],
+    "Mysterio": [
+        "Green fog's rolling through an empty film set, and none of it makes sense. Mysterio's waiting inside it.",
+        "Every mirror on the block is showing something different. Mysterio's behind the glass somewhere.",
+        "A 'movie shoot' downtown has no crew, no cameras, and one very theatrical man waiting in the smoke.",
+    ],
+    "Mister Negative": [
+        "The shelter on Pell Street just went dark, lights and all. Mister Negative's waiting behind the counter.",
+        "Chinatown's gone quiet in a way that means something. Li's stopped smiling — Mister Negative hasn't.",
+        "A charity dinner turned into something else entirely. Mister Negative's still sitting at the head table.",
+    ],
+    "Doctor Octopus": [
+        "ESU's reactor wing is glowing where it shouldn't be. Doctor Octopus is waiting with all four arms out.",
+        "Four steel tentacles just tore through a lab wall. Otto's not interested in hiding anymore.",
+        "Something's humming under Oscorp's old annex, and it's got a very particular, very angry inventor attached to it.",
+    ],
+    "the Green Goblin": [
+        "Every light in Oscorp Tower is on at 3am. Osborn's waiting at the top, glider idling.",
+        "A pumpkin bomb went off over Midtown just to get your attention. Green Goblin's circling, waiting for you to look up.",
+        "Norman's stopped hiding behind the company. Green Goblin's on the tower ledge, and he's not smiling.",
+    ],
+    "Venom": [
+        "Something black and wrong is crawling up the side of the Daily Bugle. Venom's waiting on the roof.",
+        "Eddie Brock's byline hasn't run in weeks. What's wearing him now is waiting in the alley behind the building.",
+        "A shape with too many teeth just introduced itself to a mugger and left nothing behind. Venom's still out there.",
+    ],
+    "Carnage": [
+        "The precinct's in lockdown and it's already too late. Carnage is loose, and he's not hiding it.",
+        "Blood-red and laughing, Cletus tore out of holding twenty minutes ago. Carnage doesn't do quiet.",
+        "There's no negotiating with this one. Carnage is waiting exactly where he wants to be found.",
+    ],
+    "the Sinister Six": [
+        "They've all shown up at once — every name you've ever put down, standing in the same place. This is different.",
+        "It was never six separate problems. Tonight, it's one very bad night, all at once.",
+        "Every rooftop around you has someone on it. The Sinister Six aren't waiting to ambush you — they're waiting for you to notice.",
+    ],
+}
+
+
+def boss_name(bracket: int) -> str:
+    """bracket = user.boss_clears + 1 — which gate is currently active."""
+    idx = (bracket - 1) % len(BOSS_ROSTER)
+    cycle = (bracket - 1) // len(BOSS_ROSTER)
+    name = BOSS_ROSTER[idx]
+    return name if cycle == 0 else f"{name} (Round {cycle + 1})"
+
+
+def boss_flavor_lines(bracket: int) -> list[str]:
+    idx = (bracket - 1) % len(BOSS_ROSTER)
+    return BOSS_FLAVOR[BOSS_ROSTER[idx]]
+
+
+def boss_difficulty_level(user: User) -> int:
+    """The reputation level boss combat stats scale against — same as the gate
+    level, except it stops climbing past MAX_BOSS_DIFFICULTY_LEVEL (level 100).
+    Leveling and boss_clears keep incrementing normally past that; only the fight
+    itself stays frozen at its hardest, so very high accounts don't run into
+    unwinnable fights."""
+    return min(next_boss_gate_level(user), MAX_BOSS_DIFFICULTY_LEVEL)
 
 
 @dataclass
@@ -74,7 +239,7 @@ class PatrolStart:
     xp_multiplier: float
 
 
-async def begin_patrol(session: AsyncSession, user: User) -> PatrolStart:
+async def _begin(session: AsyncSession, user: User, outcome: dict) -> PatrolStart:
     web_fluid_used = await remove_item(session, user.discord_id, WEB_FLUID_ITEM_KEY, WEB_FLUID_PER_PATROL)
     web_fluid_tax = 0
     if not web_fluid_used:
@@ -82,7 +247,6 @@ async def begin_patrol(session: AsyncSession, user: User) -> PatrolStart:
         await add_wallet(session, user, -web_fluid_tax, reason="patrol:no_web_fluid")
 
     difficulty = difficulty_multiplier(user.reputation_level)
-    outcome = _roll_patrol_outcome(user.crime_level)
     flavor = random.choice(outcome["flavor"])
     xp_multiplier = await reputation_xp_multiplier(session, user.discord_id)
 
@@ -95,6 +259,25 @@ async def begin_patrol(session: AsyncSession, user: User) -> PatrolStart:
         difficulty=difficulty,
         xp_multiplier=xp_multiplier,
     )
+
+
+async def begin_patrol(session: AsyncSession, user: User) -> PatrolStart:
+    outcome = _roll_patrol_outcome(user.crime_level)
+    return await _begin(session, user, outcome)
+
+
+async def begin_boss_patrol(session: AsyncSession, user: User) -> PatrolStart:
+    """Same setup cost as a normal patrol (web fluid, ally XP multiplier) but the
+    outcome isn't rolled — you're heading straight for the boss guarding your next
+    reputation gate, with flavor themed to that specific villain. xp/cash both come
+    from the fixed boss-clear reward in finalize_battle, not from a rolled range, so
+    they're zeroed here. difficulty is overridden after _begin() to the frozen boss
+    curve instead of the player's raw (possibly past-100) reputation level."""
+    bracket = user.boss_clears + 1
+    outcome = {"key": "boss", "flavor": boss_flavor_lines(bracket), "xp": [0, 0]}
+    start = await _begin(session, user, outcome)
+    start.difficulty = difficulty_multiplier(boss_difficulty_level(user))
+    return start
 
 
 def compute_base_xp(start: PatrolStart) -> int:

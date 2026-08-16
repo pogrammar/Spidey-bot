@@ -29,6 +29,7 @@ class User(Base):
     reputation_xp: Mapped[int] = mapped_column(Integer, default=0)
     suit_integrity: Mapped[int] = mapped_column(Integer, default=100)
     crime_level: Mapped[int] = mapped_column(Integer, default=0)
+    boss_clears: Mapped[int] = mapped_column(Integer, default=0)
     eviction_meter: Mapped[int] = mapped_column(Integer, default=0)
     next_rent_due: Mapped[datetime.datetime] = mapped_column(
         DateTime,

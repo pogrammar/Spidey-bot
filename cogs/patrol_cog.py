@@ -15,12 +15,15 @@ from services.battle_service import (
 )
 from services.busy import get_busy
 from services.cooldowns import format_remaining, get_remaining_seconds, set_cooldown
-from services.economy import get_or_create_user
-from services.gadget_service import list_equipped_gadgets
+from services.economy import at_boss_gate, get_or_create_user
+from services.gadget_service import list_all_owned_gadgets, list_equipped_gadgets
 from services.patrol_service import (
     PATROL_COOLDOWN_SECONDS,
     PatrolResult,
+    begin_boss_patrol,
     begin_patrol,
+    boss_flavor_lines,
+    boss_name,
     compute_base_xp,
     finish_noncombat_patrol,
 )
@@ -50,11 +53,13 @@ TIER_KEYS = {
     "crime_bronze": ("Bronze", "tier_bronze"),
     "crime_silver": ("Silver", "tier_silver"),
     "crime_gold": ("Gold", "tier_gold"),
+    "boss": ("Boss", "tier_boss"),
 }
 TIER_BUTTON_STYLES = {
     "Gold": discord.ButtonStyle.success,
     "Silver": discord.ButtonStyle.primary,
     "Bronze": discord.ButtonStyle.secondary,
+    "Boss": discord.ButtonStyle.danger,
 }
 
 
@@ -110,6 +115,28 @@ class GadgetActionButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):
         async with async_session() as session:
             line = await resolve_gadget(session, self.battle_view.author_id, self.battle_view.state, self.gadget_key)
+        await self.battle_view._advance(interaction, line)
+
+
+class GadgetSelect(discord.ui.Select):
+    """Boss fights only — every owned gadget goes in one dropdown instead of a
+    button each. A full kit (5 gadgets today, more later as new abilities land)
+    would blow past Discord's 5-per-row button limit fast; a Select scales to 25
+    options without ever getting cluttered. Broken gadgets are just left out of the
+    list — a Select can't gray out individual options the way a button can."""
+
+    def __init__(self, battle_view: "PatrolBattleView", options_data: list[tuple[str, str]]):
+        options = [
+            discord.SelectOption(label=name, value=key, emoji=emoji(key) or emoji("gadget_use"))
+            for key, name in options_data
+        ]
+        super().__init__(placeholder="Use a gadget...", options=options)
+        self.battle_view = battle_view
+
+    async def callback(self, interaction: discord.Interaction):
+        gadget_key = self.values[0]
+        async with async_session() as session:
+            line = await resolve_gadget(session, self.battle_view.author_id, self.battle_view.state, gadget_key)
         await self.battle_view._advance(interaction, line)
 
 
@@ -181,17 +208,33 @@ class PatrolBattleView(discord.ui.DesignerView):
             container.add_text(f"-# BATTLE LOG\n{log_lines}")
 
         container.add_separator()
-        container.add_row(
-            AttackButton(self, disabled=False),
-            EvadeButton(self, disabled=False),
-            *(
-                GadgetActionButton(key, name, self, disabled=key in self.state.broken_gadget_keys)
+        if self.state.outcome_key == "boss":
+            container.add_row(AttackButton(self, disabled=False), EvadeButton(self, disabled=False))
+            usable_gadgets = [
+                (key, name)
                 for key, name in self.state.available_gadgets
-            ),
-        )
-        if not self.state.available_gadgets:
-            container.add_separator()
-            container.add_text("-# No gadgets equipped this fight.")
+                if key not in self.state.broken_gadget_keys
+            ]
+            if usable_gadgets:
+                container.add_row(GadgetSelect(self, usable_gadgets))
+            elif self.state.available_gadgets:
+                container.add_separator(divider=False)
+                container.add_text("-# Every gadget you brought is broken for this fight.")
+            else:
+                container.add_separator(divider=False)
+                container.add_text("-# No gadgets owned — buy some from /shop.")
+        else:
+            container.add_row(
+                AttackButton(self, disabled=False),
+                EvadeButton(self, disabled=False),
+                *(
+                    GadgetActionButton(key, name, self, disabled=key in self.state.broken_gadget_keys)
+                    for key, name in self.state.available_gadgets
+                ),
+            )
+            if not self.state.available_gadgets:
+                container.add_separator()
+                container.add_text("-# No gadgets equipped this fight.")
 
         self.add_item(container)
 
@@ -207,6 +250,10 @@ class PatrolBattleView(discord.ui.DesignerView):
             result_icon_key, result_label = "victory", "Victory"
             headline = f"{_cap(self.state.enemy_name)} goes down clean."
             badge_style = discord.ButtonStyle.success
+        elif self.state.end_reason == "suit_depleted":
+            result_icon_key, result_label = "retreat", "Defeated"
+            headline = f"Your suit gives out — {_cap(self.state.enemy_name)} leaves you no room to keep fighting."
+            badge_style = discord.ButtonStyle.danger
         else:
             result_icon_key, result_label = "retreat", "Retreated"
             headline = f"{_cap(self.state.enemy_name)} is still standing — you disengage."
@@ -247,6 +294,19 @@ class PatrolBattleView(discord.ui.DesignerView):
             heading = f"{gadget_emoji} Gadget Broke" if gadget_emoji else "Gadget Broke"
             field_groups.append((heading, [("", value)]))
 
+        if report.boss_new_level:
+            boss_emoji = emoji("tier_boss")
+            heading = f"{boss_emoji} Boss Cleared" if boss_emoji else "Boss Cleared"
+            field_groups.append(
+                (heading, [("", f"You break through — Reputation Level {report.boss_new_level} unlocked.")])
+            )
+
+        if report.boss_cash_reward:
+            money_emoji = emoji("money")
+            heading = f"{money_emoji} City Thanks You" if money_emoji else "City Thanks You"
+            value = f"Taking down a threat like that doesn't go unnoticed. (+${report.boss_cash_reward:,})"
+            field_groups.append((heading, [("", value)]))
+
         if report.donation_flavor:
             money_emoji = emoji("money")
             heading = f"{money_emoji} City Thanks You" if money_emoji else "City Thanks You"
@@ -268,6 +328,14 @@ class PatrolBattleView(discord.ui.DesignerView):
         if self.state.enemy_hp <= 0:
             self.state.ended = True
             self.state.end_reason = "won"
+        elif self.state.outcome_key == "boss" and self.state.suit_remaining <= 0:
+            # Boss fights only — suit integrity doubles as your HP here (crime
+            # tiers don't require full suit to start, so 0% mid-fight there stays
+            # cosmetic, not a loss condition). A killing blow always skips the
+            # enemy's counter roll in the same round (see resolve_attack/
+            # resolve_gadget), so this can never fire on the same round you win.
+            self.state.ended = True
+            self.state.end_reason = "suit_depleted"
         elif self.state.round_number >= self.state.max_rounds:
             self.state.ended = True
             self.state.end_reason = "rounds_exhausted"
@@ -310,6 +378,17 @@ class PatrolBattleView(discord.ui.DesignerView):
                 await self.message.edit(view=self, files=self.files, attachments=[])
             except discord.HTTPException:
                 pass
+
+
+def _boss_gate_view(bracket: int, suit_integrity: int) -> StaticView:
+    description = random.choice(boss_flavor_lines(bracket))
+    return StaticView(
+        "Boss Incoming",
+        description,
+        fields=[("Suit Integrity", f"{suit_integrity}% — need 100% to take this fight")],
+        footer_lines=["/workbench repair when you're ready."],
+        icon_key="tier_boss",
+    )
 
 
 def _noncombat_view(result: PatrolResult, suit_warning: str | None) -> StaticView:
@@ -371,10 +450,20 @@ class PatrolCog(commands.Cog):
                 )
                 return
 
-            start = await begin_patrol(session, user)
-            is_crime = start.outcome["key"] in ("crime_bronze", "crime_silver", "crime_gold")
+            boss_bracket = None
+            if at_boss_gate(user):
+                if user.suit_integrity < 100:
+                    gate_view = _boss_gate_view(user.boss_clears + 1, user.suit_integrity)
+                    await ctx.respond(view=gate_view, files=gate_view.files)
+                    return
+                boss_bracket = user.boss_clears + 1
+                start = await begin_boss_patrol(session, user)
+            else:
+                start = await begin_patrol(session, user)
 
-            if not is_crime:
+            is_combat = start.outcome["key"] in ("crime_bronze", "crime_silver", "crime_gold", "boss")
+
+            if not is_combat:
                 result = await finish_noncombat_patrol(session, user, start)
                 await set_cooldown(session, user.discord_id, "patrol", PATROL_COOLDOWN_SECONDS)
                 suit_warning = await repair_readiness_warning(session, user)
@@ -382,12 +471,14 @@ class PatrolCog(commands.Cog):
                 await ctx.respond(view=noncombat_view, files=noncombat_view.files)
                 return
 
-            # Crime encounter — lock /patrol for the whole possible battle window so a
-            # second call can't start an overlapping fight; reset to normal once this ends.
+            # Crime/boss encounter — lock /patrol for the whole possible battle window
+            # so a second call can't start an overlapping fight; reset to normal once
+            # this ends.
             await set_cooldown(session, user.discord_id, "patrol", BATTLE_LOCK_SECONDS)
 
             base_xp = compute_base_xp(start)
-            equipped = await list_equipped_gadgets(session, user.discord_id)
+            gadget_source = list_all_owned_gadgets if boss_bracket else list_equipped_gadgets
+            equipped = await gadget_source(session, user.discord_id)
             available_gadgets = []
             for inv_item in equipped:
                 item_def = await inv_item.awaitable_attrs.item
@@ -400,6 +491,7 @@ class PatrolCog(commands.Cog):
                 base_xp=base_xp,
                 base_cash=0,
                 available_gadgets=available_gadgets,
+                enemy_name=boss_name(boss_bracket) if boss_bracket else None,
             )
 
         fluid_note = (

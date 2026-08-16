@@ -4,8 +4,25 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Ally, Brew, Cooldown, GiftUsage, InventoryItem, Item, MarketListing, PendingPhoto, Transaction, User
+from utils.leveling import xp_for_level
 
 STARTER_CAMERA_KEY = "camera"
+
+# Every 5th reputation level is boss-gated — XP still accrues from patrols, but is
+# pinned at the gate level's floor until the boss guarding it is beaten. boss_clears
+# tracks how many gates a user has cleared; the next one is always 5 levels further
+# out. Existing players are grandfathered in past migration (see
+# alembic/versions/*_add_boss_gates.py) so nobody gets knocked back down to fight a
+# gate they're already well past — only ever the next uncleared one.
+BOSS_LEVEL_INTERVAL = 5
+
+
+def next_boss_gate_level(user: User) -> int:
+    return BOSS_LEVEL_INTERVAL * (user.boss_clears + 1)
+
+
+def at_boss_gate(user: User) -> bool:
+    return user.reputation_level >= next_boss_gate_level(user)
 
 # Bank capacity auto-expands instead of ever hard-blocking a deposit — sized to
 # reputation level so it keeps pace with how much a higher-level player actually
@@ -76,7 +93,11 @@ async def add_bank(session: AsyncSession, user: User, amount: int, reason: str) 
 
 
 async def add_reputation(session: AsyncSession, user: User, xp: int) -> None:
-    user.reputation_xp += max(0, xp)
+    """Clamped at the next uncleared boss gate — a losing or below-gate patrol still
+    grants XP normally, but nothing pushes you past a gate you haven't beaten yet."""
+    gained = max(0, xp)
+    cap = xp_for_level(next_boss_gate_level(user))
+    user.reputation_xp = min(user.reputation_xp + gained, cap)
     await session.commit()
 
 
