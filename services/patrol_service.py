@@ -219,6 +219,7 @@ class PatrolResult:
     xp_gained: int = 0
     cash_gained: int = 0
     crime_level: int = 0
+    crime_level_delta: int = 0
     hazard_flavor: str | None = None
     hazard_cash: int = 0
     web_fluid_used: bool = False
@@ -304,7 +305,9 @@ async def finish_noncombat_patrol(session: AsyncSession, user: User, start: Patr
         await add_wallet(session, user, result.cash_gained, reason=f"patrol:{outcome['key']}")
 
     await add_reputation(session, user, xp)
-    user.crime_level = max(0, user.crime_level - rand_range(CRIME_LEVEL_DECAY_RANGE))
+    crime_decay = rand_range(CRIME_LEVEL_DECAY_RANGE)
+    user.crime_level = max(0, user.crime_level - crime_decay)
+    result.crime_level_delta = -crime_decay
 
     hazard = await roll_hazard(session, user.discord_id)
     if hazard is not None:

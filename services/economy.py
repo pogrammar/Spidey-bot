@@ -24,6 +24,17 @@ def next_boss_gate_level(user: User) -> int:
 def at_boss_gate(user: User) -> bool:
     return user.reputation_level >= next_boss_gate_level(user)
 
+
+# A city left to run wild costs you focus — crime_level rises when you skip patrol
+# for /tutoring or /ally visit, and decays back down whenever you actually patrol
+# (see patrol_service.py / battle_service.py / ally_service.py). Past this
+# threshold, reputation XP gains take a flat cut, same threshold-based shape as the
+# existing ally-happiness penalty. Doesn't apply to a boss-clear promotion (that's
+# a direct level-floor snap, not a scaled XP grant — same boundary the booster XP
+# perk respects).
+HIGH_CRIME_THRESHOLD = 70
+CRIME_XP_PENALTY_MULTIPLIER = 0.8
+
 # Bank capacity auto-expands instead of ever hard-blocking a deposit — sized to
 # reputation level so it keeps pace with how much a higher-level player actually
 # earns. Triggers reactively (a deposit that wouldn't fit) and proactively (bank
@@ -94,8 +105,11 @@ async def add_bank(session: AsyncSession, user: User, amount: int, reason: str) 
 
 async def add_reputation(session: AsyncSession, user: User, xp: int) -> None:
     """Clamped at the next uncleared boss gate — a losing or below-gate patrol still
-    grants XP normally, but nothing pushes you past a gate you haven't beaten yet."""
+    grants XP normally, but nothing pushes you past a gate you haven't beaten yet.
+    Also cut by CRIME_XP_PENALTY_MULTIPLIER while crime_level is high."""
     gained = max(0, xp)
+    if user.crime_level >= HIGH_CRIME_THRESHOLD:
+        gained = round(gained * CRIME_XP_PENALTY_MULTIPLIER)
     cap = xp_for_level(next_boss_gate_level(user))
     user.reputation_xp = min(user.reputation_xp + gained, cap)
     await session.commit()

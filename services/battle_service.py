@@ -347,6 +347,7 @@ class BattleReport:
     hazard_flavor: str | None
     hazard_cash: int
     crime_level: int
+    crime_level_delta: int = 0
     boss_cash_reward: int = 0
     boss_new_level: int | None = None
 
@@ -587,7 +588,9 @@ async def finalize_battle(session: AsyncSession, user: User, state: BattleState)
         await add_wallet(session, user, donation_cash, reason=f"donation:{donation['key']}")
         donation_flavor = donation["flavor"]
 
-    user.crime_level = max(0, user.crime_level - rand_range(CRIME_LEVEL_DECAY_RANGE))
+    crime_decay = rand_range(CRIME_LEVEL_DECAY_RANGE)
+    user.crime_level = max(0, user.crime_level - crime_decay)
+    crime_level_delta = -crime_decay
 
     hazard_flavor = None
     hazard_cash = 0
@@ -615,6 +618,7 @@ async def finalize_battle(session: AsyncSession, user: User, state: BattleState)
         hazard_flavor=hazard_flavor,
         hazard_cash=hazard_cash,
         crime_level=user.crime_level,
+        crime_level_delta=crime_level_delta,
         boss_cash_reward=boss_cash_reward,
         boss_new_level=boss_new_level,
     )

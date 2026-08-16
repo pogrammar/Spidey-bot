@@ -76,6 +76,13 @@ def _bar(current: int, maximum: int, filled_emoji: str, segments: int = 10) -> s
     return filled_emoji * filled + "⬜" * (segments - filled)
 
 
+def _crime_line(crime_level: int, crime_level_delta: int) -> str:
+    """Small subtext meant to sit right under a Reputation XP field's value — not
+    its own field, just a quiet ambient readout of how patrolling nudged the city's
+    crime_level (see services/economy.py's HIGH_CRIME_THRESHOLD for the payoff)."""
+    return f"\n-# City crime: {crime_level}/100 ({crime_level_delta:+d})"
+
+
 def _cap(name: str) -> str:
     """Capitalizes just the first letter — str.capitalize() also lowercases the rest,
     which mangles names with their own internal capitals (e.g. "a Sable mercenary")."""
@@ -270,7 +277,8 @@ class PatrolBattleView(discord.ui.DesignerView):
         container.add_section(discord.ui.TextDisplay(f"# Patrol Battle — {tier} — Over\n{headline}"), accessory=accessory)
         self.files = [file] if file else []
 
-        outcome_fields = [(f"{emoji('reputation') or ''} Reputation XP".strip(), f"+{report.xp_gained}")]
+        crime_line = _crime_line(report.crime_level, report.crime_level_delta)
+        outcome_fields = [(f"{emoji('reputation') or ''} Reputation XP".strip(), f"+{report.xp_gained}{crime_line}")]
         if report.cash_gained:
             outcome_fields.append(("Cash", f"+${report.cash_gained:,}"))
         outcome_fields.append((f"{emoji('suit_damage') or ''} Suit Damage".strip(), f"-{report.suit_damage}%"))
@@ -410,7 +418,8 @@ def _noncombat_view(result: PatrolResult, suit_warning: str | None) -> StaticVie
         ))
 
     xp_note = " (thriving allies bonus)" if result.ally_xp_bonus else ""
-    fields.append((f"{emoji('reputation') or ''} Reputation XP".strip(), f"+{result.xp_gained}{xp_note}"))
+    crime_line = _crime_line(result.crime_level, result.crime_level_delta)
+    fields.append((f"{emoji('reputation') or ''} Reputation XP".strip(), f"+{result.xp_gained}{xp_note}{crime_line}"))
 
     if result.cash_gained:
         fields.append(("Cash", f"+${result.cash_gained:,}"))
