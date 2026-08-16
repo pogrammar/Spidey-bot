@@ -251,4 +251,5 @@ async def roll_gadget_wearout(
 
     item = await session.get(Item, target.item_key)
     await session.delete(target)
+    await session.commit()
     return item_label(item.key, item.name) if item else target.item_key
