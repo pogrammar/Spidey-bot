@@ -25,3 +25,10 @@ UPTIME_ROBOT_PUSH_URL = os.environ.get("UPTIME_ROBOT_PUSH_URL", "").strip() or N
 # free HTTP monitor to poll. Must match the port Pterodactyl allocated in the
 # Network tab — set SPIDEY_HEALTH_PORT explicitly in .env to that value.
 HEALTH_PORT = int(os.environ.get("SPIDEY_HEALTH_PORT", "8080"))
+
+# Optional: an ngrok account's authtoken + claimed free static domain (see
+# cogs/tunnel_cog.py). Both must be set for the tunnel to start — gives the bot a
+# permanent HTTPS URL (e.g. for Patreon's OAuth redirect_uri) without owning a
+# domain or setting up TLS on the host.
+NGROK_AUTHTOKEN = os.environ.get("NGROK_AUTHTOKEN", "").strip() or None
+NGROK_STATIC_DOMAIN = os.environ.get("NGROK_STATIC_DOMAIN", "").strip() or None
