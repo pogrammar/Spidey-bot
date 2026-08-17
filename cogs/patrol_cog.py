@@ -30,6 +30,7 @@ from services.patrol_service import (
 from services.suit_service import repair_readiness_warning
 from utils.embeds import error_embed
 from utils.icons import emoji, item_label, thumbnail
+from utils.perks import is_server_booster
 from utils.v2_embeds import StaticView, add_field_groups
 
 # Round decisions get a full 30 seconds — this is a choice, not a reflex test. Outcomes
@@ -154,8 +155,9 @@ class GadgetSelect(discord.ui.Select):
 
 
 class PatrolBattleView(discord.ui.DesignerView):
-    def __init__(self, state: BattleState, author_id: int, intro_banner: str):
+    def __init__(self, bot: discord.Bot, state: BattleState, author_id: int, intro_banner: str):
         super().__init__(timeout=BATTLE_ROUND_TIMEOUT)
+        self.bot = bot
         self.state = state
         self.author_id = author_id
         self.message: discord.Message | None = None
@@ -363,9 +365,10 @@ class PatrolBattleView(discord.ui.DesignerView):
             await interaction.response.edit_message(view=self)
             return
 
+        booster_active = await is_server_booster(self.bot, self.author_id)
         async with async_session() as session:
             user = await get_or_create_user(session, self.author_id)
-            report = await finalize_battle(session, user, self.state)
+            report = await finalize_battle(session, user, self.state, booster_active=booster_active)
             await set_cooldown(session, self.author_id, "patrol", PATROL_COOLDOWN_SECONDS)
             suit_warning = await repair_readiness_warning(session, user)
 
@@ -381,9 +384,10 @@ class PatrolBattleView(discord.ui.DesignerView):
         self.state.ended = True
         self.state.end_reason = "timeout"
 
+        booster_active = await is_server_booster(self.bot, self.author_id)
         async with async_session() as session:
             user = await get_or_create_user(session, self.author_id)
-            report = await finalize_battle(session, user, self.state)
+            report = await finalize_battle(session, user, self.state, booster_active=booster_active)
             await set_cooldown(session, self.author_id, "patrol", PATROL_COOLDOWN_SECONDS)
 
         self._render_final(report, suit_warning=None, timed_out=True)
@@ -515,7 +519,7 @@ class PatrolCog(commands.Cog):
             if start.web_fluid_used
             else f" (out of {item_label('web_fluid_vial', 'Web-Fluid')} — cost you ${start.web_fluid_tax:,})"
         )
-        view = PatrolBattleView(state, ctx.author.id, intro_banner=f"{start.flavor}{fluid_note}")
+        view = PatrolBattleView(self.bot, state, ctx.author.id, intro_banner=f"{start.flavor}{fluid_note}")
         await ctx.respond(view=view, files=view.files)
         view.message = await ctx.interaction.original_response()
 

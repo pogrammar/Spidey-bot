@@ -16,6 +16,12 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("spidey")
 
 intents = discord.Intents.default()
+# Privileged intent — needed to read Server Booster status for members other than
+# whoever's invoking the current interaction (see utils/perks.py), since that
+# depends on the gateway's member cache, not just a single interaction's own
+# payload. Must also be enabled in the Developer Portal (Bot tab > Privileged
+# Gateway Intents > Server Members Intent) or the bot fails to connect.
+intents.members = True
 bot = discord.Bot(intents=intents, debug_guilds=[config.DEV_GUILD_ID] if config.DEV_GUILD_ID else None)
 apply_mention_patch()
 bot.before_invoke(announce_if_first_time)

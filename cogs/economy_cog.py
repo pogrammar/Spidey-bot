@@ -5,10 +5,12 @@ from discord import Option
 from discord.ext import commands
 
 from db.base import async_session
+from services.battle_service import BOOSTER_SUIT_DAMAGE_REDUCTION
 from services.economy import deposit, get_or_create_user, withdraw
 from utils.embeds import error_embed
 from utils.icons import emoji, item_label
 from utils.item_display import badge
+from utils.perks import is_server_booster
 from utils.v2_embeds import StaticView
 
 LEDGER_FOOTERS = [
@@ -39,6 +41,14 @@ class EconomyCog(commands.Cog):
     async def balance(self, ctx: discord.ApplicationContext):
         async with async_session() as session:
             user = await get_or_create_user(session, ctx.author.id)
+        is_booster = await is_server_booster(self.bot, ctx.author.id)
+
+        if is_booster:
+            booster_name = f"{emoji('rare_badge') or ''} Server Booster Perk".strip()
+            booster_value = f"Active — {round(BOOSTER_SUIT_DAMAGE_REDUCTION * 100)}% less suit damage on patrols"
+        else:
+            booster_name = f"{emoji('locked') or ''} Server Booster Perk".strip()
+            booster_value = "Boost the server to unlock this"
 
         view = StaticView(
             "Your Ledger",
@@ -58,6 +68,7 @@ class EconomyCog(commands.Cog):
                             f"Level {user.reputation_level} ({user.reputation_xp} XP)",
                         ),
                         (f"{emoji('suit_integrity') or ''} Suit Integrity".strip(), f"{user.suit_integrity}%"),
+                        (booster_name, booster_value),
                     ],
                 ),
             ],
