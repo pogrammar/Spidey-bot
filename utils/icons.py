@@ -56,6 +56,8 @@ def thumbnail(key: str) -> tuple[discord.ui.Thumbnail, discord.File] | None:
 # action names from assets/icons/README.md) so both systems can be looked up the
 # same way even though they serve different purposes.
 EMOJI: dict[str, str] = {
+    "arachnid": "<:ARACHNID:1538980599598030959>",
+    "symbiote": "<:SYMBIOTE:1538980623350374480>",
     "web_shooters": "<:web_shooters:1538072524284231741>",
     "web_grabber": "<:web_grabber:1538072522422231050>",
     "web_fluid_vial": "<:web_fluid_vial:1538072520047988858>",
