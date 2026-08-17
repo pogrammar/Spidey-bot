@@ -41,11 +41,20 @@ class PatreonCog(commands.Cog):
             await ctx.respond(str(exc), ephemeral=True)
             return
 
-        await ctx.respond(
-            "Click below to connect your Patreon account. This link is single-use and expires in 10 minutes.",
-            view=LinkButtonView(url),
-            ephemeral=True,
-        )
+        message = "Click below to connect your Patreon account. This link is single-use and expires in 10 minutes."
+        view = LinkButtonView(url)
+
+        if ctx.guild is None:
+            # Already in DMs — just answer directly, no need to DM on top of a DM.
+            await ctx.respond(message, view=view, ephemeral=True)
+            return
+
+        try:
+            await ctx.author.send(message, view=view)
+            await ctx.respond("Check your DMs — I've sent you a link to connect Patreon.", ephemeral=True)
+        except discord.HTTPException:
+            # DMs closed — fall back to answering right where the command was run.
+            await ctx.respond(message, view=view, ephemeral=True)
 
     async def _callback(self, request: web.Request) -> web.Response:
         code = request.query.get("code")
