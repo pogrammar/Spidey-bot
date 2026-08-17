@@ -32,3 +32,9 @@ HEALTH_PORT = int(os.environ.get("SPIDEY_HEALTH_PORT", "8080"))
 # domain or setting up TLS on the host.
 NGROK_AUTHTOKEN = os.environ.get("NGROK_AUTHTOKEN", "").strip() or None
 NGROK_STATIC_DOMAIN = os.environ.get("NGROK_STATIC_DOMAIN", "").strip() or None
+
+# Patreon OAuth client (see services/patreon_service.py, cogs/patreon_cog.py).
+# PATREON_REDIRECT_URI must exactly match a redirect URI registered on that client.
+PATREON_CLIENT_ID = os.environ.get("PATREON_CLIENT_ID", "").strip() or None
+PATREON_CLIENT_SECRET = os.environ.get("PATREON_CLIENT_SECRET", "").strip() or None
+PATREON_REDIRECT_URI = os.environ.get("PATREON_REDIRECT_URI", "").strip() or None

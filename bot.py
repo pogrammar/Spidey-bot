@@ -9,6 +9,7 @@ from alembic.config import Config as AlembicConfig
 import config
 from db.base import async_session
 from db.seed import seed_items
+from utils import webapp
 from utils.first_run import announce_if_first_time
 from utils.mention_patch import apply as apply_mention_patch
 
@@ -38,6 +39,7 @@ EXTENSIONS = [
     "cogs.scheduler_cog",
     "cogs.help_cog",
     "cogs.admin_cog",
+    "cogs.patreon_cog",
     "cogs.status_cog",
     "cogs.heartbeat_cog",
     "cogs.health_cog",
@@ -71,6 +73,11 @@ async def main():
 
     for extension in EXTENSIONS:
         bot.load_extension(extension)
+
+    # After every extension has loaded (so every cog's routes are already
+    # registered onto it — see utils/webapp.py) but before the bot actually
+    # connects, so /health can answer "not ready yet" instead of 404ing.
+    await webapp.start()
 
     async with bot:
         await bot.start(config.DISCORD_TOKEN)

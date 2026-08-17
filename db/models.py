@@ -184,6 +184,24 @@ class Brew(Base):
     ready_at: Mapped[datetime.datetime] = mapped_column(DateTime)
 
 
+class PatreonLink(Base):
+    """A user's linked Patreon account — independent of any Discord server or role,
+    since these perks are meant to be worldwide (see services/patreon_service.py).
+    tier is re-checked periodically using refresh_token, not just set once at link
+    time, so a lapsed/downgraded pledge actually stops granting perks."""
+
+    __tablename__ = "patreon_links"
+
+    discord_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.discord_id"), primary_key=True)
+    patreon_user_id: Mapped[str] = mapped_column(String)
+    tier: Mapped[str | None] = mapped_column(String, nullable=True)  # None = linked but no active pledge
+    access_token: Mapped[str] = mapped_column(String)
+    refresh_token: Mapped[str] = mapped_column(String)
+    token_expires_at: Mapped[datetime.datetime] = mapped_column(DateTime)
+    linked_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
+    last_checked_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
+
+
 class AdminUser(Base):
     """Runtime-granted /admin access via /admin admins add, on top of the hardcoded
     ADMIN_DISCORD_IDS in .env — those act as root (always trusted, can't be revoked
