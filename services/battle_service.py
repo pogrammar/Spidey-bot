@@ -173,11 +173,6 @@ SCAVENGE_URGENCY_BONUS_MAX = 0.25
 UNPROTECTED_INJURY_RANGE = [20, 50]
 UNPROTECTED_CAMERA_BREAK_BONUS = 0.15
 
-# Server Booster perk — crime-tier patrols only. Boss fights treat suit integrity
-# as real HP with a difficulty curve already tuned around full damage, so this
-# never applies there (see the outcome_key != "boss" check in finalize_battle).
-BOOSTER_SUIT_DAMAGE_REDUCTION = 0.3
-
 # Round-by-round flavor — randomized per line so repeated battles don't read identical
 # every time. `{dmg}` / `{enemy}` get filled in where present.
 ATTACK_HIT_LINES = [
@@ -528,9 +523,7 @@ async def resolve_gadget(session: AsyncSession, user_id: int, state: BattleState
     return " ".join(lines)
 
 
-async def finalize_battle(
-    session: AsyncSession, user: User, state: BattleState, booster_active: bool = False
-) -> BattleReport:
+async def finalize_battle(session: AsyncSession, user: User, state: BattleState) -> BattleReport:
     stats = ENEMY_STATS[state.outcome_key]
     won_clean = state.enemy_hp <= 0 and state.end_reason == "won"
 
@@ -540,10 +533,7 @@ async def finalize_battle(
         xp += rand_range(CLEAN_WIN_XP_BONUS)
         cash += rand_range(CLEAN_WIN_CASH_BONUS)
 
-    suit_damage = state.total_suit_damage
-    if booster_active and state.outcome_key != "boss":
-        suit_damage = round(suit_damage * (1 - BOOSTER_SUIT_DAMAGE_REDUCTION))
-    user.suit_integrity = max(0, user.suit_integrity - suit_damage)
+    user.suit_integrity = max(0, user.suit_integrity - state.total_suit_damage)
 
     unprotected_penalty = 0
     if state.entered_unprotected:
@@ -622,7 +612,7 @@ async def finalize_battle(
         won_clean=won_clean,
         xp_gained=actual_xp_gained,
         cash_gained=cash,
-        suit_damage=suit_damage,
+        suit_damage=state.total_suit_damage,
         photo_banked=photo_banked,
         photo_quality=stats["photo_quality"] if photo_banked else None,
         camera_broke=camera_broke,

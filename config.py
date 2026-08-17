@@ -9,12 +9,6 @@ DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]
 _dev_guild_id = os.environ.get("DEV_GUILD_ID", "").strip()
 DEV_GUILD_ID = int(_dev_guild_id) if _dev_guild_id else None
 
-# Our official Discord server — Server Booster status is checked against this one
-# guild specifically (see utils/perks.py), never wherever a command happens to be
-# run from. Left unset, booster-gated perks just stay off everywhere.
-_perk_guild_id = os.environ.get("PERK_GUILD_ID", "").strip()
-PERK_GUILD_ID = int(_perk_guild_id) if _perk_guild_id else None
-
 _admin_ids = os.environ.get("ADMIN_DISCORD_IDS", "").strip()
 # Comma-separated list of Discord user IDs allowed to run /admin commands. An empty
 # set denies everyone, not everyone-but-unchecked — see cogs/admin_cog.py's _is_admin.
