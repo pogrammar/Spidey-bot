@@ -51,13 +51,22 @@ class PatreonCog(commands.Cog):
         code = request.query.get("code")
         state = request.query.get("state")
         if not code or not state:
+            log.warning("Patreon callback: missing code/state in query params: %s", dict(request.query))
             return web.Response(text=CALLBACK_ERROR_HTML.format(message="Missing code or state."), content_type="text/html", status=400)
 
         try:
             async with async_session() as session:
                 discord_id, tier = await handle_callback(session, code, state)
         except PatreonLinkError as exc:
+            log.warning("Patreon callback failed: %s", exc)
             return web.Response(text=CALLBACK_ERROR_HTML.format(message=str(exc)), content_type="text/html", status=400)
+        except Exception:
+            log.exception("Patreon callback: unexpected error")
+            return web.Response(
+                text=CALLBACK_ERROR_HTML.format(message="Unexpected error — check the bot's logs."),
+                content_type="text/html",
+                status=500,
+            )
 
         try:
             user = await self.bot.fetch_user(discord_id)
