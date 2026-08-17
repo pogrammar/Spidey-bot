@@ -68,6 +68,19 @@ class TunnelCog(commands.Cog):
         with tarfile.open(fileobj=io.BytesIO(archive_bytes)) as tar:
             tar.extract("ngrok", path=NGROK_DIR)
 
+    @staticmethod
+    def _write_config(authtoken: str) -> None:
+        """Writes ngrok's config file directly instead of shelling out to `ngrok
+        config add-authtoken` — that command was observed hanging indefinitely after
+        already completing its work (almost certainly a background update-check
+        call that never returns on a network-restricted host), which stalled the
+        entire bot's startup behind it. This is a plain, static v3 config format
+        (see ngrok.com/docs/agent/config/v3), so writing it directly sidesteps the
+        subprocess and its hang risk entirely."""
+        config_dir = Path.home() / ".config" / "ngrok"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "ngrok.yml").write_text(f"version: 3\nagent:\n  authtoken: {authtoken}\n")
+
     async def _start_tunnel(self) -> None:
         if not config.NGROK_AUTHTOKEN or not config.NGROK_STATIC_DOMAIN:
             log.info("Tunnel: NGROK_AUTHTOKEN/NGROK_STATIC_DOMAIN not set — skipping.")
@@ -76,10 +89,7 @@ class TunnelCog(commands.Cog):
             return
 
         try:
-            configure = await asyncio.create_subprocess_exec(
-                str(NGROK_PATH), "config", "add-authtoken", config.NGROK_AUTHTOKEN
-            )
-            await configure.wait()
+            await asyncio.to_thread(self._write_config, config.NGROK_AUTHTOKEN)
 
             self.process = await asyncio.create_subprocess_exec(
                 str(NGROK_PATH),
