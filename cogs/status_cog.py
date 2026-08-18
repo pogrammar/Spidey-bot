@@ -1,8 +1,11 @@
 import itertools
+import logging
 import random
 
 import discord
 from discord.ext import commands, tasks
+
+log = logging.getLogger("spidey")
 
 STATUS_ROTATION_SECONDS = 60
 
@@ -81,10 +84,17 @@ class StatusCog(commands.Cog):
 
     @tasks.loop(seconds=STATUS_ROTATION_SECONDS)
     async def rotate_status(self):
-        await self.bot.change_presence(
-            status=discord.Status.idle,
-            activity=discord.Streaming(name=next(self._cycle), url=STREAM_URL),
-        )
+        # tasks.loop kills itself for good after any single uncaught exception —
+        # confirmed live (status worked, then silently died and never came back).
+        # One bad change_presence call should cost this cycle's update, not every
+        # future one, so failures get logged and swallowed instead of propagating.
+        try:
+            await self.bot.change_presence(
+                status=discord.Status.idle,
+                activity=discord.Streaming(name=next(self._cycle), url=STREAM_URL),
+            )
+        except discord.HTTPException:
+            log.warning("Status rotation failed this cycle", exc_info=True)
 
     @rotate_status.before_loop
     async def before_rotate_status(self):
