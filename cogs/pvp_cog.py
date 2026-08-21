@@ -70,7 +70,13 @@ class PvpCog(commands.Cog):
             await set_cooldown(session, thief.discord_id, "shakedown", SHAKEDOWN_COOLDOWN_SECONDS)
             await set_cooldown(session, victim.discord_id, "shakedown_target", TARGET_PROTECTION_SECONDS)
 
-        if result.success:
+        if result.stealth_protected:
+            await ctx.respond(
+                embed=error_embed(
+                    f"Something's watching {target.display_name} — you back off before you even get close."
+                )
+            )
+        elif result.success:
             view = StaticView(
                 "Shakedown — Success",
                 f"You corner {target.display_name} in an alley and lighten their pockets.",

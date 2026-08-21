@@ -4,9 +4,14 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Ally, Brew, Cooldown, GiftUsage, InventoryItem, Item, MarketListing, PendingPhoto, Transaction, User
+from services.patreon_service import GROWTH_CHOICE_XP, get_growth_choice
 from utils.leveling import xp_for_level
 
 STARTER_CAMERA_KEY = "camera"
+
+# Accelerated Growth (Arachnid+ perk, "xp" choice) — middle of the locked 25-35%
+# range, same convention as every other perk here.
+ACCELERATED_GROWTH_XP_MULTIPLIER = 1.3
 
 # Every 5th reputation level is boss-gated — XP still accrues from patrols, but is
 # pinned at the gate level's floor until the boss guarding it is beaten. boss_clears
@@ -113,6 +118,8 @@ async def add_reputation(session: AsyncSession, user: User, xp: int) -> int:
     gained = max(0, xp)
     if user.crime_level >= HIGH_CRIME_THRESHOLD:
         gained = round(gained * CRIME_XP_PENALTY_MULTIPLIER)
+    if await get_growth_choice(session, user.discord_id) == GROWTH_CHOICE_XP:
+        gained = round(gained * ACCELERATED_GROWTH_XP_MULTIPLIER)
     cap = xp_for_level(next_boss_gate_level(user))
     before = user.reputation_xp
     user.reputation_xp = min(user.reputation_xp + gained, cap)

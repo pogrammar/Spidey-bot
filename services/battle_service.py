@@ -11,13 +11,17 @@ from services.economy import add_reputation, add_wallet, next_boss_gate_level
 from services.gadget_service import list_equipped_gadgets, roll_gadget_effect, roll_gadget_wearout
 from services.inventory_service import add_item
 from services.loot_tables import rand_range
+from services.patreon_service import TIER_RANK_ARACHNID, TIER_RANK_NONE, TIER_RANK_SYMBIOTE
 from services.patrol_service import (
+    BIOMORPHIC_WEBBING_CASH_CHANCE,
+    BIOMORPHIC_WEBBING_CASH_RANGE,
     CRIME_LEVEL_DECAY_RANGE_LOSS,
     CRIME_LEVEL_DECAY_RANGE_WIN,
     get_equipped_camera,
     roll_donation,
     roll_hazard,
 )
+from utils.icons import emoji
 from utils.leveling import xp_for_level
 
 # Round count is rolled per-battle (see start_battle) instead of fixed, for pacing
@@ -173,6 +177,32 @@ SCAVENGE_URGENCY_BONUS_MAX = 0.25
 UNPROTECTED_INJURY_RANGE = [20, 50]
 UNPROTECTED_CAMERA_BREAK_BONUS = 0.15
 
+# Enhanced Strength (Arachnid+ Patreon perk) — bonus Attack damage, crime-tier
+# patrols only. Boss fights excluded for the same reason Enhanced Resilience (the
+# earlier, now-replaced version of this perk) excluded them: that difficulty curve
+# is tuned around full-strength numbers, and buffing damage output there risks the
+# same balance fragility the Venom Blast tuning already ran into. 30% matches the
+# same convention every other perk in this set uses.
+ENHANCED_STRENGTH_DAMAGE_BONUS = 0.3
+
+# Biomorphic Webbing (Symbiote+ Patreon perk) — passive scavenge boost across
+# cash/components/photos, applies to any combat encounter (crime tiers and boss
+# fights alike). Three independent rolls rather than one shared roll, since the
+# copy promises "coins, photos, AND parts" — meant to feel like occasional small
+# extras, not a guaranteed bonus every fight. Cash chance/range live in
+# patrol_service.py since the same bonus also applies to non-combat patrols.
+BIOMORPHIC_WEBBING_COMPONENT_CHANCE = 0.20  # only rolled if the normal drop_chance roll missed
+BIOMORPHIC_WEBBING_PHOTO_CHANCE = 0.20  # only rolled if a camera's equipped and a photo was already banked
+
+# Sonic Dampener (Symbiote drawback, not a perk) — scoped to just "the Shocker"
+# (see patrol_service.py's BOSS_ROSTER), the only one of the 20 named bosses that
+# thematically fits, since all 20 mechanically share one identical stat block —
+# no per-boss attack-type system exists to gate a broader "any sonic boss"
+# version. +30% mirrors Enhanced Resilience's -30% as the same-shape opposite,
+# a real cost for the tier rather than pure upside.
+SONIC_DAMPENER_BOSS_NAME = "the Shocker"
+SONIC_DAMPENER_DAMAGE_INCREASE = 0.3
+
 # Round-by-round flavor — randomized per line so repeated battles don't read identical
 # every time. `{dmg}` / `{enemy}` get filled in where present.
 ATTACK_HIT_LINES = [
@@ -322,6 +352,7 @@ class BattleState:
     broken_gadget_keys: set[str] = field(default_factory=set)
     gadgets_broken: list[str] = field(default_factory=list)  # names, for the final report
     combo_ready: bool = False  # set by a successful Evade, consumed by the next Attack
+    venom_blast_used: bool = False  # once-per-boss-fight — see _apply_counter_with_venom_blast
     ended: bool = False
     end_reason: str | None = None  # "won" | "rounds_exhausted" | "timeout"
     log: list[str] = field(default_factory=list)
@@ -398,6 +429,47 @@ def start_battle(
     )
 
 
+# Arachnid+ Patreon perks — proc chances sit in the same range as existing gadget
+# base_chance values (0.25-0.55 in gadget_service.py's GADGET_EFFECTS), pulled
+# toward the low end since these are always-on and cost no loadout slot, unlike a
+# gadget you had to choose to equip.
+ELECTRIC_WEBBING_PROC_CHANCE = 0.20
+ELECTRIC_WEBBING_BONUS_DAMAGE_RANGE = [8, 15]
+# Every perk line below ends with the Arachnid tag — same rule the user set for
+# every Arachnid perk: whenever one actually fires, the emoji + "Arachnid" has to
+# be visibly attached to it, not just a flavor line that happens to imply it.
+ELECTRIC_WEBBING_LINES = [
+    " Your webbing crackles and locks them up — no counter.",
+    " A jolt of electric webbing fries their footing — no counter.",
+    " The web-shock catches them cold — no counter.",
+]
+
+SPIDER_BOTS_PROC_CHANCE = 0.20
+SPIDER_BOTS_BONUS_DAMAGE_RANGE = [5, 12]
+SPIDER_BOTS_LINES = [
+    " A spider-bot darts in for {dmg} extra damage.",
+    " One of your drones gets a free hit in for {dmg}.",
+    " A spider-bot swarms past you for {dmg} bonus damage.",
+]
+
+
+def _arachnid_tag() -> str:
+    return f" ({emoji('arachnid') or ''} Arachnid)".replace("  ", " ")
+
+
+def roll_spider_bots(state: BattleState, tier_rank: int) -> str:
+    """Passive, always-on — no action cost, doesn't interact with the counter at
+    all, just adds bonus damage if the enemy's still standing. Safe to call after
+    any round-ending action (Attack/Evade/Gadget)."""
+    if tier_rank < TIER_RANK_ARACHNID or state.enemy_hp <= 0:
+        return ""
+    if random.random() >= SPIDER_BOTS_PROC_CHANCE:
+        return ""
+    dmg = rand_range(SPIDER_BOTS_BONUS_DAMAGE_RANGE)
+    state.enemy_hp = max(0, state.enemy_hp - dmg)
+    return random.choice(SPIDER_BOTS_LINES).format(dmg=dmg) + _arachnid_tag()
+
+
 def _enemy_counter(state: BattleState, incoming_multiplier: float = 1.0) -> int:
     if random.random() >= state.enemy_hit_chance:
         return 0
@@ -411,27 +483,81 @@ def _apply_counter(state: BattleState, dmg: int) -> None:
         state.hits_taken += 1
 
 
-def resolve_attack(state: BattleState) -> str:
+VENOM_BLAST_LINES = [
+    " The symbiote surges up and swallows the hit whole — you blast back twice as hard!",
+    " Venom Blast! The blow never lands — the counter alone does more damage than it would've taken.",
+    " The bond absorbs everything — and pays it back double.",
+]
+
+
+def _apply_counter_with_venom_blast(state: BattleState, dmg: int, tier_rank: int) -> str:
+    """Boss fights only, once per fight. Copy already promises "twice as hard" —
+    implementing that literally (2x a normal attack roll) rather than a flat
+    number keeps it self-scaling with difficulty instead of needing its own
+    separately-tuned constant that could drift out of sync with ATTACK_DAMAGE.
+
+    Also applies Sonic Dampener (Symbiote drawback) before the Venom Blast check,
+    so a dampened hit correctly factors into whether Venom Blast would even
+    trigger — a real cost, not just cosmetic extra damage after the fact."""
+    if tier_rank >= TIER_RANK_SYMBIOTE and dmg > 0 and state.enemy_name == SONIC_DAMPENER_BOSS_NAME:
+        dmg = round(dmg * (1 + SONIC_DAMPENER_DAMAGE_INCREASE))
+
+    would_deplete = (
+        state.outcome_key == "boss"
+        and dmg > 0
+        and (state.starting_suit_integrity - state.total_suit_damage - dmg) <= 0
+    )
+    if tier_rank >= TIER_RANK_SYMBIOTE and not state.venom_blast_used and would_deplete:
+        state.venom_blast_used = True
+        bonus = rand_range(state.attack_damage_range) * 2
+        state.enemy_hp = max(0, state.enemy_hp - bonus)
+        return random.choice(VENOM_BLAST_LINES)
+
+    _apply_counter(state, dmg)
+    return ""
+
+
+def resolve_attack(state: BattleState, tier_rank: int = TIER_RANK_NONE) -> str:
     dmg_range = state.attack_damage_range
     comboed = state.combo_ready
     state.combo_ready = False
 
     hit_chance = COMBO_HIT_CHANCE if comboed else ATTACK_HIT_CHANCE
-    if random.random() < hit_chance:
+    landed = random.random() < hit_chance
+    if landed:
         dmg = rand_range(dmg_range)
         if comboed:
             dmg = round(dmg * COMBO_DAMAGE_MULTIPLIER)
+        # Enhanced Strength (Arachnid+ perk) — crime-tier patrols only, same
+        # boss-exclusion reasoning as the perk it replaced (Enhanced Resilience).
+        strength_active = tier_rank >= TIER_RANK_ARACHNID and state.outcome_key != "boss"
+        if strength_active:
+            dmg = round(dmg * (1 + ENHANCED_STRENGTH_DAMAGE_BONUS))
         state.enemy_hp = max(0, state.enemy_hp - dmg)
         template = random.choice(COMBO_HIT_LINES if comboed else ATTACK_HIT_LINES)
         hit_line = template.format(dmg=dmg)
+        if strength_active:
+            hit_line += " (Enhanced Strength)" + _arachnid_tag()
     else:
         hit_line = random.choice(ATTACK_MISS_LINES)
 
     if state.enemy_hp <= 0:
         return hit_line
 
+    # Electric Webbing (Arachnid+ perk) — only eligible on a landed hit (it needs
+    # contact to shock the target), stuns the enemy so the counter's skipped
+    # entirely for the round, same "clean kill skips the counter roll" shape as a
+    # finishing blow already gets.
+    if landed and tier_rank >= TIER_RANK_ARACHNID and random.random() < ELECTRIC_WEBBING_PROC_CHANCE:
+        bonus = rand_range(ELECTRIC_WEBBING_BONUS_DAMAGE_RANGE)
+        state.enemy_hp = max(0, state.enemy_hp - bonus)
+        hit_line += random.choice(ELECTRIC_WEBBING_LINES) + _arachnid_tag()
+        return hit_line
+
     counter = _enemy_counter(state)
-    _apply_counter(state, counter)
+    venom_line = _apply_counter_with_venom_blast(state, counter, tier_rank)
+    if venom_line:
+        return hit_line + venom_line
     enemy = state.enemy_name.capitalize()
     if counter:
         counter_line = random.choice(ENEMY_HIT_LINES).format(enemy=enemy, dmg=counter)
@@ -440,15 +566,19 @@ def resolve_attack(state: BattleState) -> str:
     return hit_line + counter_line
 
 
-def resolve_evade(state: BattleState) -> str:
+def resolve_evade(state: BattleState, tier_rank: int = TIER_RANK_NONE) -> str:
     state.combo_ready = True
     counter = _enemy_counter(state, EVADE_DAMAGE_MULTIPLIER)
-    _apply_counter(state, counter)
+    venom_line = _apply_counter_with_venom_blast(state, counter, tier_rank)
+    if venom_line:
+        return venom_line
     base = random.choice(EVADE_GRAZE_LINES).format(dmg=counter) if counter else random.choice(EVADE_CLEAN_LINES)
     return f"{base} {random.choice(COMBO_SETUP_LINES)}"
 
 
-async def resolve_gadget(session: AsyncSession, user_id: int, state: BattleState, gadget_key: str) -> str:
+async def resolve_gadget(
+    session: AsyncSession, user_id: int, state: BattleState, gadget_key: str, tier_rank: int = TIER_RANK_NONE
+) -> str:
     all_owned = state.outcome_key == "boss"
     effect = await roll_gadget_effect(session, user_id, gadget_key, all_owned=all_owned)
     broken = await roll_gadget_wearout(session, user_id, state.difficulty, gadget_key, all_owned=all_owned)
@@ -471,12 +601,15 @@ async def resolve_gadget(session: AsyncSession, user_id: int, state: BattleState
 
         if state.enemy_hp > 0:
             counter = _enemy_counter(state)
-            _apply_counter(state, counter)
-            enemy = state.enemy_name.capitalize()
-            if counter:
-                line += random.choice(ENEMY_HIT_LINES).format(enemy=enemy, dmg=counter)
+            venom_line = _apply_counter_with_venom_blast(state, counter, tier_rank)
+            if venom_line:
+                line += venom_line
             else:
-                line += random.choice(ENEMY_WHIFF_LINES).format(enemy=enemy)
+                enemy = state.enemy_name.capitalize()
+                if counter:
+                    line += random.choice(ENEMY_HIT_LINES).format(enemy=enemy, dmg=counter)
+                else:
+                    line += random.choice(ENEMY_WHIFF_LINES).format(enemy=enemy)
 
         if broken:
             line += f" Worse, your {broken} gives out."
@@ -513,8 +646,10 @@ async def resolve_gadget(session: AsyncSession, user_id: int, state: BattleState
 
         if state.enemy_hp > 0:
             counter = _enemy_counter(state)
-            _apply_counter(state, counter)
-            if counter:
+            venom_line = _apply_counter_with_venom_blast(state, counter, tier_rank)
+            if venom_line:
+                lines.append(venom_line)
+            elif counter:
                 lines.append(f"{state.enemy_name.capitalize()} hits back, -{counter}% suit.")
 
     if broken:
@@ -523,7 +658,9 @@ async def resolve_gadget(session: AsyncSession, user_id: int, state: BattleState
     return " ".join(lines)
 
 
-async def finalize_battle(session: AsyncSession, user: User, state: BattleState) -> BattleReport:
+async def finalize_battle(
+    session: AsyncSession, user: User, state: BattleState, tier_rank: int = TIER_RANK_NONE
+) -> BattleReport:
     stats = ENEMY_STATS[state.outcome_key]
     won_clean = state.enemy_hp <= 0 and state.end_reason == "won"
 
@@ -553,6 +690,8 @@ async def finalize_battle(session: AsyncSession, user: User, state: BattleState)
         if random.random() < break_chance:
             camera_broke = True
             await session.delete(camera)
+        if tier_rank >= TIER_RANK_SYMBIOTE and random.random() < BIOMORPHIC_WEBBING_PHOTO_CHANCE:
+            session.add(PendingPhoto(user_id=user.discord_id, quality=stats["photo_quality"]))
 
     item_found = None
     drop_chance = min(0.9, stats["base_drop_chance"] + state.scavenge_bonus)
@@ -562,6 +701,14 @@ async def finalize_battle(session: AsyncSession, user: User, state: BattleState)
     if random.random() < drop_chance:
         await add_item(session, user.discord_id, stats["component_key"], 1)
         item_found = stats["component_key"]
+    elif tier_rank >= TIER_RANK_SYMBIOTE and random.random() < BIOMORPHIC_WEBBING_COMPONENT_CHANCE:
+        # "the webbing catches what you'd have missed" — only fires when the base
+        # roll above missed, so this never stacks into a guaranteed double-drop.
+        await add_item(session, user.discord_id, stats["component_key"], 1)
+        item_found = stats["component_key"]
+
+    if tier_rank >= TIER_RANK_SYMBIOTE and random.random() < BIOMORPHIC_WEBBING_CASH_CHANCE:
+        cash += rand_range(BIOMORPHIC_WEBBING_CASH_RANGE)
 
     if cash:
         await add_wallet(session, user, cash, reason=f"patrol_battle:{state.outcome_key}")

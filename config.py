@@ -38,3 +38,11 @@ NGROK_STATIC_DOMAIN = os.environ.get("NGROK_STATIC_DOMAIN", "").strip() or None
 PATREON_CLIENT_ID = os.environ.get("PATREON_CLIENT_ID", "").strip() or None
 PATREON_CLIENT_SECRET = os.environ.get("PATREON_CLIENT_SECRET", "").strip() or None
 PATREON_REDIRECT_URI = os.environ.get("PATREON_REDIRECT_URI", "").strip() or None
+
+# Exact tier titles as configured on the actual Patreon page — PatreonLink.tier
+# stores whatever Patreon's API returns for a patron's tier title verbatim, so
+# these have to match character-for-character. Kept in .env (not hardcoded) so a
+# tier rename on Patreon's side doesn't require a code change. See
+# services/patreon_service.py's tier_rank() for how these get used.
+PATREON_ARACHNID_TIER_NAME = os.environ.get("PATREON_ARACHNID_TIER_NAME", "").strip() or None
+PATREON_SYMBIOTE_TIER_NAME = os.environ.get("PATREON_SYMBIOTE_TIER_NAME", "").strip() or None

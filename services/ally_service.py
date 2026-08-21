@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Ally, GiftUsage, Item, User
 from services.inventory_service import remove_item
+from services.patreon_service import GROWTH_CHOICE_ALLIES, TIER_RANK_ARACHNID, get_growth_choice, get_tier_rank
 from utils.icons import item_label
 
 ALLY_NAMES = {"aunt_may": "Aunt May", "mj": "MJ"}
@@ -16,6 +17,18 @@ ALLY_NAMES = {"aunt_may": "Aunt May", "mj": "MJ"}
 # number that quietly takes care of itself. At 6/hour, thriving (70+) erodes to
 # neglected (<30) in under 7 hours of not showing up.
 DECAY_PER_HOUR = 6.0
+
+# Supportive Allies ("allies" growth choice) — NOT currently reachable by Patreon
+# subscribers (that mechanic belongs to the separate, not-yet-rebuilt server-boost
+# perk track — see cogs/patreon_cog.py's note). Left in place dormant.
+SUPPORTIVE_ALLIES_DECAY_MULTIPLIER = 0.7
+
+# The Arachnid tier's one drawback — bonded with the spider, allies keep a closer
+# eye on you now, so happiness slips faster if you don't show up. +30% mirrors the
+# same "opposite of an existing tuned number" convention Sonic Dampener uses.
+# Always-on for tier_rank >= ARACHNID, no choice involved — unlike Supportive
+# Allies above, this isn't opt-in.
+ARACHNID_ALLY_DECAY_INCREASE = 0.3
 
 PLAIN_VISIT_BOOST = 20  # a gift-free visit — free, modest, resets gift burnout
 LOW_HAPPINESS_THRESHOLD = 30  # any ally below this = neglected
@@ -87,15 +100,20 @@ async def _get_or_create_gift_usage(
     return usage
 
 
-def _decayed_happiness(ally: Ally) -> int:
+async def _decayed_happiness(session: AsyncSession, user_id: int, ally: Ally) -> int:
+    decay_rate = DECAY_PER_HOUR
+    if await get_growth_choice(session, user_id) == GROWTH_CHOICE_ALLIES:
+        decay_rate *= SUPPORTIVE_ALLIES_DECAY_MULTIPLIER
+    if await get_tier_rank(session, user_id) >= TIER_RANK_ARACHNID:
+        decay_rate *= 1 + ARACHNID_ALLY_DECAY_INCREASE
     hours_elapsed = (datetime.datetime.utcnow() - ally.last_visited_at).total_seconds() / 3600
-    decayed = ally.banked_happiness - DECAY_PER_HOUR * hours_elapsed
+    decayed = ally.banked_happiness - decay_rate * hours_elapsed
     return max(0, min(100, round(decayed)))
 
 
 async def get_current_happiness(session: AsyncSession, user_id: int, ally_key: str) -> int:
     ally = await _get_or_create_ally(session, user_id, ally_key)
-    return _decayed_happiness(ally)
+    return await _decayed_happiness(session, user_id, ally)
 
 
 async def set_happiness(session: AsyncSession, user_id: int, ally_key: str, value: int) -> int:
@@ -154,7 +172,7 @@ async def visit_ally(
         return False, "Never heard of them.", None
 
     ally = await _get_or_create_ally(session, user.discord_id, ally_key)
-    current = _decayed_happiness(ally)
+    current = await _decayed_happiness(session, user.discord_id, ally)
     visit_seconds = visit_duration_seconds(current)
 
     gift_name: str | None = None

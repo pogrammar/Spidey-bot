@@ -11,12 +11,14 @@ from services.battle_service import (
     resolve_attack,
     resolve_evade,
     resolve_gadget,
+    roll_spider_bots,
     start_battle,
 )
 from services.busy import get_busy
 from services.cooldowns import format_remaining, get_remaining_seconds, set_cooldown
 from services.economy import at_boss_gate, get_or_create_user
 from services.gadget_service import list_all_owned_gadgets, list_equipped_gadgets
+from services.patreon_service import get_tier_rank
 from services.patrol_service import (
     PATROL_COOLDOWN_SECONDS,
     PatrolResult,
@@ -97,7 +99,10 @@ class AttackButton(discord.ui.Button):
         self.battle_view = battle_view
 
     async def callback(self, interaction: discord.Interaction):
-        await self.battle_view._advance(interaction, resolve_attack(self.battle_view.state))
+        state = self.battle_view.state
+        tier_rank = self.battle_view.tier_rank
+        line = resolve_attack(state, tier_rank) + roll_spider_bots(state, tier_rank)
+        await self.battle_view._advance(interaction, line)
 
 
 class EvadeButton(discord.ui.Button):
@@ -108,7 +113,10 @@ class EvadeButton(discord.ui.Button):
         self.battle_view = battle_view
 
     async def callback(self, interaction: discord.Interaction):
-        await self.battle_view._advance(interaction, resolve_evade(self.battle_view.state))
+        state = self.battle_view.state
+        tier_rank = self.battle_view.tier_rank
+        line = resolve_evade(state, tier_rank) + roll_spider_bots(state, tier_rank)
+        await self.battle_view._advance(interaction, line)
 
 
 class GadgetActionButton(discord.ui.Button):
@@ -126,8 +134,11 @@ class GadgetActionButton(discord.ui.Button):
         self.battle_view = battle_view
 
     async def callback(self, interaction: discord.Interaction):
+        state = self.battle_view.state
+        tier_rank = self.battle_view.tier_rank
         async with async_session() as session:
-            line = await resolve_gadget(session, self.battle_view.author_id, self.battle_view.state, self.gadget_key)
+            line = await resolve_gadget(session, self.battle_view.author_id, state, self.gadget_key, tier_rank)
+        line += roll_spider_bots(state, tier_rank)
         await self.battle_view._advance(interaction, line)
 
 
@@ -148,16 +159,20 @@ class GadgetSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         gadget_key = self.values[0]
+        state = self.battle_view.state
+        tier_rank = self.battle_view.tier_rank
         async with async_session() as session:
-            line = await resolve_gadget(session, self.battle_view.author_id, self.battle_view.state, gadget_key)
+            line = await resolve_gadget(session, self.battle_view.author_id, state, gadget_key, tier_rank)
+        line += roll_spider_bots(state, tier_rank)
         await self.battle_view._advance(interaction, line)
 
 
 class PatrolBattleView(discord.ui.DesignerView):
-    def __init__(self, state: BattleState, author_id: int, intro_banner: str):
+    def __init__(self, state: BattleState, author_id: int, tier_rank: int, intro_banner: str):
         super().__init__(timeout=BATTLE_ROUND_TIMEOUT)
         self.state = state
         self.author_id = author_id
+        self.tier_rank = tier_rank
         self.message: discord.Message | None = None
         self.files: list[discord.File] = []
         self._render(banner=intro_banner)
@@ -365,7 +380,7 @@ class PatrolBattleView(discord.ui.DesignerView):
 
         async with async_session() as session:
             user = await get_or_create_user(session, self.author_id)
-            report = await finalize_battle(session, user, self.state)
+            report = await finalize_battle(session, user, self.state, tier_rank=self.tier_rank)
             await set_cooldown(session, self.author_id, "patrol", PATROL_COOLDOWN_SECONDS)
             suit_warning = await repair_readiness_warning(session, user)
 
@@ -383,7 +398,7 @@ class PatrolBattleView(discord.ui.DesignerView):
 
         async with async_session() as session:
             user = await get_or_create_user(session, self.author_id)
-            report = await finalize_battle(session, user, self.state)
+            report = await finalize_battle(session, user, self.state, tier_rank=self.tier_rank)
             await set_cooldown(session, self.author_id, "patrol", PATROL_COOLDOWN_SECONDS)
 
         self._render_final(report, suit_warning=None, timed_out=True)
@@ -408,7 +423,10 @@ def _boss_gate_view(bracket: int, suit_integrity: int) -> StaticView:
 def _noncombat_view(result: PatrolResult, suit_warning: str | None) -> StaticView:
     fluid_field_name = item_label("web_fluid_vial", "Web Fluid")
     fields = []
-    if result.web_fluid_used:
+    if result.organic_webbing_active:
+        arachnid = emoji("arachnid") or ""
+        fields.append((fluid_field_name, f"{arachnid} Organic Webbing (Arachnid) — no vial needed".strip()))
+    elif result.web_fluid_used:
         fields.append((fluid_field_name, "-1 vial"))
     else:
         fields.append((
@@ -444,6 +462,7 @@ class PatrolCog(commands.Cog):
     async def patrol(self, ctx: discord.ApplicationContext):
         async with async_session() as session:
             user = await get_or_create_user(session, ctx.author.id)
+            tier_rank = await get_tier_rank(session, ctx.author.id)
 
             busy = await get_busy(session, user.discord_id)
             if busy is not None:
@@ -472,14 +491,14 @@ class PatrolCog(commands.Cog):
                     await ctx.respond(view=gate_view, files=gate_view.files)
                     return
                 boss_bracket = user.boss_clears + 1
-                start = await begin_boss_patrol(session, user)
+                start = await begin_boss_patrol(session, user, tier_rank)
             else:
-                start = await begin_patrol(session, user)
+                start = await begin_patrol(session, user, tier_rank)
 
             is_combat = start.outcome["key"] in ("crime_bronze", "crime_silver", "crime_gold", "boss")
 
             if not is_combat:
-                result = await finish_noncombat_patrol(session, user, start)
+                result = await finish_noncombat_patrol(session, user, start, tier_rank)
                 await set_cooldown(session, user.discord_id, "patrol", PATROL_COOLDOWN_SECONDS)
                 suit_warning = await repair_readiness_warning(session, user)
                 noncombat_view = _noncombat_view(result, suit_warning)
@@ -510,12 +529,14 @@ class PatrolCog(commands.Cog):
             lock_seconds = round(BATTLE_ROUND_TIMEOUT * state.max_rounds) + BATTLE_LOCK_MARGIN_SECONDS
             await set_cooldown(session, user.discord_id, "patrol", lock_seconds)
 
-        fluid_note = (
-            ""
-            if start.web_fluid_used
-            else f" (out of {item_label('web_fluid_vial', 'Web-Fluid')} — cost you ${start.web_fluid_tax:,})"
-        )
-        view = PatrolBattleView(state, ctx.author.id, intro_banner=f"{start.flavor}{fluid_note}")
+        if start.organic_webbing_active:
+            arachnid = emoji("arachnid") or ""
+            fluid_note = f" ({arachnid} Organic Webbing — no vial needed)".replace("  ", " ")
+        elif start.web_fluid_used:
+            fluid_note = ""
+        else:
+            fluid_note = f" (out of {item_label('web_fluid_vial', 'Web-Fluid')} — cost you ${start.web_fluid_tax:,})"
+        view = PatrolBattleView(state, ctx.author.id, tier_rank, intro_banner=f"{start.flavor}{fluid_note}")
         await ctx.respond(view=view, files=view.files)
         view.message = await ctx.interaction.original_response()
 

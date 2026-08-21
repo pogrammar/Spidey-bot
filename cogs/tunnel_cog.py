@@ -1,9 +1,12 @@
 import asyncio
 import io
 import logging
+import os
 import platform
+import shutil
 import stat
 import tarfile
+import zipfile
 from pathlib import Path
 
 import aiohttp
@@ -14,11 +17,22 @@ import config
 
 log = logging.getLogger("spidey")
 
+IS_WINDOWS = platform.system() == "Windows"
+
 # Downloaded once and kept here — this directory persists across restarts (same
-# volume as spidey.db), so this only happens on a genuinely fresh install.
+# volume as spidey.db on the real deployment; on a local Windows dev machine it's
+# just whatever's checked out), so this only happens on a genuinely fresh install.
 NGROK_DIR = Path(__file__).resolve().parent.parent / "bin"
-NGROK_PATH = NGROK_DIR / "ngrok"
-NGROK_DOWNLOAD_URL = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz"
+NGROK_PATH = NGROK_DIR / ("ngrok.exe" if IS_WINDOWS else "ngrok")
+
+# Same release ID on equinox.io across platforms — only the platform/ext segment
+# changes. macOS isn't handled since neither the real deployment (Linux) nor local
+# dev (this project's Windows machines) need it.
+NGROK_DOWNLOAD_URL = (
+    "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
+    if IS_WINDOWS
+    else "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz"
+)
 
 
 class TunnelCog(commands.Cog):
@@ -28,7 +42,9 @@ class TunnelCog(commands.Cog):
     changes, which is what a Patreon OAuth redirect_uri actually needs long-term.
     Needs NGROK_AUTHTOKEN and NGROK_STATIC_DOMAIN set — silently does nothing if
     either is missing, same "off means off, never an error" contract as the other
-    optional integrations (UptimeRobot, etc.)."""
+    optional integrations (UptimeRobot, etc.). Works on both the real Linux
+    deployment and local Windows dev — same static domain either way, since it's
+    tied to the ngrok account, not the machine."""
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
@@ -38,10 +54,27 @@ class TunnelCog(commands.Cog):
         asyncio.get_event_loop().create_task(self._start_tunnel())
 
     async def _ensure_binary(self) -> bool:
+        global NGROK_PATH
         if NGROK_PATH.is_file():
             return True
-        if platform.system() != "Linux":
-            log.warning("Tunnel: ngrok auto-download only supports Linux hosts; skipping.")
+
+        if IS_WINDOWS:
+            # Windows Smart App Control blocks a freshly-downloaded, unsigned exe
+            # from ever running at all (confirmed: WinError 4556, "malicious binary
+            # reputation") — there's no per-file exception for it once enabled, so
+            # auto-downloading is a dead end here. A system install via a channel
+            # Windows already trusts (winget/Microsoft Store) doesn't trip this —
+            # detect and reuse that instead of fighting the policy.
+            system_ngrok = shutil.which("ngrok")
+            if system_ngrok is not None:
+                NGROK_PATH = Path(system_ngrok)
+                log.info("Tunnel: using system-installed ngrok at %s", NGROK_PATH)
+                return True
+            log.warning(
+                "Tunnel: no downloaded or system ngrok found, and Windows Smart App "
+                "Control blocks running a freshly-downloaded copy. Run `winget "
+                "install ngrok.ngrok` once, then restart the bot."
+            )
             return False
 
         NGROK_DIR.mkdir(parents=True, exist_ok=True)
@@ -50,14 +83,16 @@ class TunnelCog(commands.Cog):
                 async with session.get(NGROK_DOWNLOAD_URL) as resp:
                     resp.raise_for_status()
                     archive_bytes = await resp.read()
-            # tarfile is blocking — off the event loop so a slow extract never stalls
-            # command handling elsewhere while this (one-time) setup runs.
+            # Archive extraction is blocking — off the event loop so a slow
+            # extract never stalls command handling elsewhere while this
+            # (one-time) setup runs.
             await asyncio.to_thread(self._extract, archive_bytes)
-            mode = NGROK_PATH.stat().st_mode
-            NGROK_PATH.chmod(mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+            if not IS_WINDOWS:
+                mode = NGROK_PATH.stat().st_mode
+                NGROK_PATH.chmod(mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
             log.info("Tunnel: downloaded ngrok to %s", NGROK_PATH)
             return True
-        except (aiohttp.ClientError, OSError, tarfile.TarError) as exc:
+        except (aiohttp.ClientError, OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
             # A tunnel failing to come up should never take the bot's actual Discord
             # connection down with it — same philosophy as health_cog.py's bind failure.
             log.warning("Tunnel: failed to download/extract ngrok: %s", exc)
@@ -65,19 +100,29 @@ class TunnelCog(commands.Cog):
 
     @staticmethod
     def _extract(archive_bytes: bytes) -> None:
-        with tarfile.open(fileobj=io.BytesIO(archive_bytes)) as tar:
-            tar.extract("ngrok", path=NGROK_DIR)
+        if IS_WINDOWS:
+            with zipfile.ZipFile(io.BytesIO(archive_bytes)) as zf:
+                zf.extract(NGROK_PATH.name, path=NGROK_DIR)
+        else:
+            with tarfile.open(fileobj=io.BytesIO(archive_bytes)) as tar:
+                tar.extract("ngrok", path=NGROK_DIR)
 
     @staticmethod
     def _write_config(authtoken: str) -> None:
         """Writes ngrok's config file directly instead of shelling out to `ngrok
         config add-authtoken` — that command was observed hanging indefinitely after
-        already completing its work (almost certainly a background update-check
-        call that never returns on a network-restricted host), which stalled the
-        entire bot's startup behind it. This is a plain, static v3 config format
-        (see ngrok.com/docs/agent/config/v3), so writing it directly sidesteps the
-        subprocess and its hang risk entirely."""
-        config_dir = Path.home() / ".config" / "ngrok"
+        already completing its work on the Linux deployment (almost certainly a
+        background update-check call that never returns on a network-restricted
+        host), which stalled the entire bot's startup behind it. This is a plain,
+        static v3 config format (see ngrok.com/docs/agent/config/v3), so writing it
+        directly sidesteps the subprocess and its hang risk entirely — on both
+        platforms, not just the one where the hang was actually observed."""
+        if IS_WINDOWS:
+            # %LOCALAPPDATA%\ngrok\ngrok.yml — a different default than Linux's
+            # ~/.config/ngrok/ngrok.yml, not an XDG-style path on Windows.
+            config_dir = Path(os.environ["LOCALAPPDATA"]) / "ngrok"
+        else:
+            config_dir = Path.home() / ".config" / "ngrok"
         config_dir.mkdir(parents=True, exist_ok=True)
         (config_dir / "ngrok.yml").write_text(f"version: 3\nagent:\n  authtoken: {authtoken}\n")
 

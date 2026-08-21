@@ -58,6 +58,12 @@ def thumbnail(key: str) -> tuple[discord.ui.Thumbnail, discord.File] | None:
 EMOJI: dict[str, str] = {
     "arachnid": "<:ARACHNID:1538980599598030959>",
     "symbiote": "<:SYMBIOTE:1538980623350374480>",
+    "spider_bots": "<:Spider_Bots:1539183722744651806>",
+    "electric_webbing": "<:Electric_Webbing:1539181202483970098>",
+    "stealth_mode": "<:stealth_mode:1539190205376888832>",
+    "venom_blast": "<:venom_blast:1539188598841016381>",
+    "organic_webbing": "<:organic_webbing:1539193612745576499>",
+    "biomorphic_webbing": "<:biomorphic_webbing:1539193572643962911>",
     "web_shooters": "<:web_shooters:1538072524284231741>",
     "web_grabber": "<:web_grabber:1538072522422231050>",
     "web_fluid_vial": "<:web_fluid_vial:1538072520047988858>",

@@ -42,6 +42,12 @@ class User(Base):
     daily_streak: Mapped[int] = mapped_column(Integer, default=0)
     daily_longest_streak: Mapped[int] = mapped_column(Integer, default=0)
     daily_last_claimed: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    # Stamped on every command via utils/first_run.py's global before_invoke hook
+    # (the cheapest existing "runs before every command" hook — pycord only
+    # supports one before_invoke slot, so this rides along rather than adding a
+    # second one). Powers Stealth Mode's inactivity window — see
+    # services/shakedown_service.py.
+    last_active_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
 
     inventory_items: Mapped[list["InventoryItem"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
@@ -195,6 +201,12 @@ class PatreonLink(Base):
     discord_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.discord_id"), primary_key=True)
     patreon_user_id: Mapped[str] = mapped_column(String)
     tier: Mapped[str | None] = mapped_column(String, nullable=True)  # None = linked but no active pledge
+    # Accelerated Growth (Arachnid+ perk) — "xp" or "allies", mutually exclusive by
+    # construction (one field, one value at a time). None = not chosen yet. Reset
+    # to None if a resubscribe or manual grant ever needs a clean slate — see
+    # services/patreon_service.py's get_growth_choice() for how a lapsed tier makes
+    # this inert without needing to clear the field.
+    growth_perk_choice: Mapped[str | None] = mapped_column(String, nullable=True)
     access_token: Mapped[str] = mapped_column(String)
     refresh_token: Mapped[str] = mapped_column(String)
     token_expires_at: Mapped[datetime.datetime] = mapped_column(DateTime)

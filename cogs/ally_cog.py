@@ -9,6 +9,7 @@ from services.ally_service import ALLY_NAMES, get_current_happiness, list_gift_i
 from services.busy import get_busy, set_busy
 from services.cooldowns import format_remaining
 from services.economy import get_or_create_user
+from services.patreon_service import TIER_RANK_ARACHNID, get_tier_rank
 from utils.embeds import error_embed
 from utils.icons import emoji
 from utils.v2_embeds import StaticView
@@ -48,15 +49,22 @@ class AllyCog(commands.Cog):
             happiness = {
                 key: await get_current_happiness(session, user.discord_id, key) for key in ALLY_NAMES
             }
+            tier_rank = await get_tier_rank(session, ctx.author.id)
 
         field_groups = []
         for key, name in ALLY_NAMES.items():
             level = happiness[key]
             note = " — she's noticed you've been busy." if level < 30 else ""
             field_groups.append((name, [("", f"{level}/100{note}")]))
-        view = StaticView(
-            "Who You're Neglecting", field_groups=field_groups, footer_lines=[random.choice(ALLY_FOOTERS)]
-        )
+
+        footer_lines = [random.choice(ALLY_FOOTERS)]
+        if tier_rank >= TIER_RANK_ARACHNID:
+            arachnid = emoji("arachnid") or ""
+            footer_lines.append(
+                f"{arachnid} Arachnid: bonded with the spider, your allies keep a closer eye on you now — "
+                f"happiness slips faster than it used to.".strip()
+            )
+        view = StaticView("Who You're Neglecting", field_groups=field_groups, footer_lines=footer_lines)
         await ctx.respond(view=view, files=view.files)
 
     @ally.command(name="visit", description="Spend some time with Aunt May or MJ.")

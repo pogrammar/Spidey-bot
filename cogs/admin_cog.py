@@ -575,6 +575,27 @@ class AdminCog(commands.Cog):
         rep_label = f"{emoji('reputation') or ''} reputation".strip()
         await _reply(ctx, f"{target.mention}'s {rep_label} set to {xp:,} XP (Level {level}).")
 
+    @profile.command(name="set-boss-clears", description="Set how many boss gates a user has cleared.")
+    async def set_boss_clears(
+        self,
+        ctx: discord.ApplicationContext,
+        cleared: Option(int, "Boss gates cleared (next gate = 5 * (cleared + 1))", min_value=0),
+        user: Option(discord.Member, "Whose progress (defaults to you)", required=False),
+    ):
+        """Reaching a gate's XP threshold alone isn't enough to fight *that*
+        bracket's boss — the encountered boss/difficulty is keyed off boss_clears,
+        not raw reputation level (see next_boss_gate_level in services/economy.py).
+        Testing a specific gate needs both this and /admin profile set-reputation."""
+        if not await _check_owner(ctx):
+            return
+        target = user or ctx.author
+        async with async_session() as session:
+            profile = await get_or_create_user(session, target.id)
+            profile.boss_clears = cleared
+            await session.commit()
+        next_gate = 5 * (cleared + 1)
+        await _reply(ctx, f"{target.mention}'s boss_clears set to {cleared}. Next gate: level {next_gate}.")
+
     @profile.command(name="set-suit", description="Set suit integrity.")
     async def set_suit(
         self,

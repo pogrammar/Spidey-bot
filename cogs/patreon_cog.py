@@ -5,8 +5,34 @@ from aiohttp import web
 from discord.ext import commands
 
 from db.base import async_session
-from services.patreon_service import PatreonLinkError, build_authorize_url, handle_callback
+from db.models import PatreonLink
+from services.patreon_service import (
+    TIER_RANK_ARACHNID,
+    TIER_RANK_NONE,
+    TIER_RANK_SYMBIOTE,
+    PatreonLinkError,
+    build_authorize_url,
+    get_tier_rank,
+    handle_callback,
+    tier_rank_from_name,
+    unlink_account,
+)
 from utils import webapp
+
+# NOTE: Accelerated Growth (Reputation XP boost / Supportive Allies) is
+# deliberately NOT wired to Patreon tiers — that mechanic belongs to the
+# separate server-boost-exclusive perk track (discord.gg/spider-man Nitro
+# boosting), which was built once, fully reverted, and hasn't been rebuilt.
+# The underlying code (services/patreon_service.py's get_growth_choice/
+# set_growth_choice, the hooks in economy.py/ally_service.py) is left intact
+# and dormant on purpose — don't remove it, don't wire a /patreon command to
+# it, it's for the other track whenever that gets rebuilt.
+
+TIER_RANK_LABELS = {
+    TIER_RANK_NONE: "None",
+    TIER_RANK_ARACHNID: "Arachnid",
+    TIER_RANK_SYMBIOTE: "Symbiote",
+}
 
 log = logging.getLogger("spidey")
 
@@ -15,6 +41,29 @@ CALLBACK_SUCCESS_HTML = """<!doctype html><html><body style="font-family:sans-se
 
 CALLBACK_ERROR_HTML = """<!doctype html><html><body style="font-family:sans-serif;text-align:center;padding:4rem;">
 <h2>Something went wrong</h2><p>{message}</p></body></html>"""
+
+# Sent as the post-link DM — same "Bond with the [Tier]" voice as the tier
+# descriptions, but doing a real job: telling a brand-new subscriber what
+# actually changed and what to do next, not just confirming a connection.
+ARACHNID_WELCOME = (
+    "🕷️ **Bond with the Arachnid Spider — and it's already working.**\n\n"
+    "Organic Webbing, Enhanced Strength, Electric Webbing, Spider Bots, and more combat-favoring "
+    "patrols are all live for you right now — nothing to set up.\n\n"
+    "One real thing to know: the bond means your allies keep a closer eye on you now — happiness "
+    "decays a bit faster, so you'll want to visit a little more often than before.\n\n"
+    "Run `/patreon status` whenever you want to double-check what's active."
+)
+SYMBIOTE_WELCOME = (
+    "🕷️ **Bond with the Symbiote Spider — you're all the way in.**\n\n"
+    "Everything Arachnid gets, plus Venom Blast, Stealth Mode, and Biomorphic Webbing — all live for "
+    "you right now. One thing worth knowing: the bond's watchful, but not invincible. It doesn't like "
+    "the Shocker much.\n\n"
+    "Run `/patreon status` whenever you want to double-check what's active."
+)
+NO_PLEDGE_WELCOME = (
+    "✅ Patreon connected. You don't have an active pledge right now, so no perks are active yet — "
+    "they'll kick in automatically the moment that changes, no need to re-link."
+)
 
 
 class LinkButtonView(discord.ui.View):
@@ -50,11 +99,33 @@ class PatreonCog(commands.Cog):
             return
 
         try:
-            await ctx.author.send(message, view=view)
+            await ctx.author.send(message, view=view, ephemeral=True)
             await ctx.respond("Check your DMs — I've sent you a link to connect Patreon.", ephemeral=True)
         except discord.HTTPException:
             # DMs closed — fall back to answering right where the command was run.
             await ctx.respond(message, view=view, ephemeral=True)
+
+    @patreon.command(name="unlink", description="Disconnect your Patreon account from this bot.")
+    async def unlink(self, ctx: discord.ApplicationContext):
+        async with async_session() as session:
+            ok, message = await unlink_account(session, ctx.author.id)
+        await ctx.respond(message, ephemeral=True)
+
+    @patreon.command(name="status", description="Check what tier the bot currently sees you as.")
+    async def status(self, ctx: discord.ApplicationContext):
+        async with async_session() as session:
+            link = await session.get(PatreonLink, ctx.author.id)
+            tier_rank = await get_tier_rank(session, ctx.author.id)
+
+        if link is None:
+            await ctx.respond("Not linked yet — run /patreon link to connect your Patreon account.", ephemeral=True)
+            return
+
+        lines = [
+            f"**Patreon tier reported:** {link.tier or '*(linked, no active pledge)*'}",
+            f"**Perk tier:** {TIER_RANK_LABELS[tier_rank]}",
+        ]
+        await ctx.respond("\n".join(lines), ephemeral=True)
 
     async def _callback(self, request: web.Request) -> web.Response:
         code = request.query.get("code")
@@ -77,10 +148,17 @@ class PatreonCog(commands.Cog):
                 status=500,
             )
 
+        tier_rank = tier_rank_from_name(tier)
+        if tier_rank == TIER_RANK_SYMBIOTE:
+            welcome = SYMBIOTE_WELCOME
+        elif tier_rank == TIER_RANK_ARACHNID:
+            welcome = ARACHNID_WELCOME
+        else:
+            welcome = NO_PLEDGE_WELCOME
+
         try:
             user = await self.bot.fetch_user(discord_id)
-            tier_line = f"You're linked as a **{tier}** supporter." if tier else "You're linked, but don't have an active pledge right now."
-            await user.send(f"✅ Patreon connected. {tier_line}")
+            await user.send(welcome)
         except discord.HTTPException:
             pass  # DMs closed or similar — the web page confirmation is enough either way
 

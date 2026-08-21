@@ -15,10 +15,19 @@ from services.ally_service import (
 from services.economy import BOSS_LEVEL_INTERVAL, add_reputation, add_wallet, next_boss_gate_level
 from services.inventory_service import remove_item
 from services.loot_tables import LOOT_TABLES, rand_range, weighted_choice
+from services.patreon_service import TIER_RANK_ARACHNID, TIER_RANK_NONE, TIER_RANK_SYMBIOTE
 
 PATROL_COOLDOWN_SECONDS = 30
 CAMERA_ITEM_KEY = "camera"
 CRIME_LEVEL_WEIGHT_BONUS = 0.3  # each point of crime_level nudges crime-outcome odds up
+COMBAT_READY_PATROLS_WEIGHT_BONUS = 15  # Arachnid+ Patreon perk — see _roll_patrol_outcome
+
+# Biomorphic Webbing (Symbiote+ Patreon perk) — passive bonus cash chance, applies
+# to both non-combat patrols (below) and combat encounters (battle_service.py
+# imports these two). Component/photo bonus rolls are combat-only and live in
+# battle_service.py, since non-combat patrols don't have either system at all.
+BIOMORPHIC_WEBBING_CASH_CHANCE = 0.25
+BIOMORPHIC_WEBBING_CASH_RANGE = [15, 35]
 CRIME_LEVEL_DECAY_RANGE = [3, 6]  # patrolling calms the city back down — non-combat outcomes
 
 # Combat outcomes use a bigger split instead of the flat range above — actually
@@ -232,6 +241,7 @@ class PatrolResult:
     hazard_cash: int = 0
     web_fluid_used: bool = False
     web_fluid_tax: int = 0
+    organic_webbing_active: bool = False
     ally_xp_bonus: bool = False
     difficulty_level: int = 1
 
@@ -244,16 +254,28 @@ class PatrolStart:
     flavor: str
     web_fluid_used: bool
     web_fluid_tax: int
+    organic_webbing_active: bool
     difficulty: float
     xp_multiplier: float
 
 
-async def _begin(session: AsyncSession, user: User, outcome: dict) -> PatrolStart:
-    web_fluid_used = await remove_item(session, user.discord_id, WEB_FLUID_ITEM_KEY, WEB_FLUID_PER_PATROL)
-    web_fluid_tax = 0
-    if not web_fluid_used:
-        web_fluid_tax = rand_range(NO_WEB_FLUID_TAX_RANGE)
-        await add_wallet(session, user, -web_fluid_tax, reason="patrol:no_web_fluid")
+async def _begin(session: AsyncSession, user: User, outcome: dict, tier_rank: int = TIER_RANK_NONE) -> PatrolStart:
+    # Organic Webbing (Arachnid+ perk) — Peter's body produces its own web fluid
+    # now, full stop. Not a chance roll: patrol NEVER touches vial inventory or the
+    # no-fluid cash tax for an Arachnid+ subscriber. /lab brew still works exactly
+    # as before — vials made that way are free to sell, just never spent by their
+    # own patrols. web_fluid_used stays a separate flag from organic_webbing_active
+    # since "-1 vial" would be a lie here — no vial was ever touched.
+    organic_webbing_active = tier_rank >= TIER_RANK_ARACHNID
+    if organic_webbing_active:
+        web_fluid_used = True
+        web_fluid_tax = 0
+    else:
+        web_fluid_used = await remove_item(session, user.discord_id, WEB_FLUID_ITEM_KEY, WEB_FLUID_PER_PATROL)
+        web_fluid_tax = 0
+        if not web_fluid_used:
+            web_fluid_tax = rand_range(NO_WEB_FLUID_TAX_RANGE)
+            await add_wallet(session, user, -web_fluid_tax, reason="patrol:no_web_fluid")
 
     difficulty = difficulty_multiplier(user.reputation_level)
     flavor = random.choice(outcome["flavor"])
@@ -264,18 +286,19 @@ async def _begin(session: AsyncSession, user: User, outcome: dict) -> PatrolStar
         outcome=outcome,
         flavor=flavor,
         web_fluid_used=web_fluid_used,
+        organic_webbing_active=organic_webbing_active,
         web_fluid_tax=web_fluid_tax,
         difficulty=difficulty,
         xp_multiplier=xp_multiplier,
     )
 
 
-async def begin_patrol(session: AsyncSession, user: User) -> PatrolStart:
-    outcome = _roll_patrol_outcome(user.crime_level)
-    return await _begin(session, user, outcome)
+async def begin_patrol(session: AsyncSession, user: User, tier_rank: int = TIER_RANK_NONE) -> PatrolStart:
+    outcome = _roll_patrol_outcome(user.crime_level, tier_rank)
+    return await _begin(session, user, outcome, tier_rank)
 
 
-async def begin_boss_patrol(session: AsyncSession, user: User) -> PatrolStart:
+async def begin_boss_patrol(session: AsyncSession, user: User, tier_rank: int = TIER_RANK_NONE) -> PatrolStart:
     """Same setup cost as a normal patrol (web fluid, ally XP multiplier) but the
     outcome isn't rolled — you're heading straight for the boss guarding your next
     reputation gate, with flavor themed to that specific villain. xp/cash both come
@@ -284,7 +307,7 @@ async def begin_boss_patrol(session: AsyncSession, user: User) -> PatrolStart:
     curve instead of the player's raw (possibly past-100) reputation level."""
     bracket = user.boss_clears + 1
     outcome = {"key": "boss", "flavor": boss_flavor_lines(bracket), "xp": [0, 0]}
-    start = await _begin(session, user, outcome)
+    start = await _begin(session, user, outcome, tier_rank)
     start.difficulty = difficulty_multiplier(boss_difficulty_level(user))
     return start
 
@@ -293,7 +316,9 @@ def compute_base_xp(start: PatrolStart) -> int:
     return round(rand_range(start.outcome["xp"]) * start.xp_multiplier * start.difficulty)
 
 
-async def finish_noncombat_patrol(session: AsyncSession, user: User, start: PatrolStart) -> PatrolResult:
+async def finish_noncombat_patrol(
+    session: AsyncSession, user: User, start: PatrolStart, tier_rank: int = TIER_RANK_NONE
+) -> PatrolResult:
     """Resolves "nothing" and "scenic" outcomes instantly — no battle needed."""
     outcome = start.outcome
     xp = compute_base_xp(start)
@@ -303,12 +328,15 @@ async def finish_noncombat_patrol(session: AsyncSession, user: User, start: Patr
         flavor=start.flavor,
         web_fluid_used=start.web_fluid_used,
         web_fluid_tax=start.web_fluid_tax,
+        organic_webbing_active=start.organic_webbing_active,
         ally_xp_bonus=start.xp_multiplier > 1.0,
         difficulty_level=user.reputation_level,
     )
 
     if "cash" in outcome:
         result.cash_gained = rand_range(outcome["cash"])
+        if tier_rank >= TIER_RANK_SYMBIOTE and random.random() < BIOMORPHIC_WEBBING_CASH_CHANCE:
+            result.cash_gained += rand_range(BIOMORPHIC_WEBBING_CASH_RANGE)
         await add_wallet(session, user, result.cash_gained, reason=f"patrol:{outcome['key']}")
 
     # The actual applied amount, not the pre-penalty/pre-cap roll — a crime penalty
@@ -332,14 +360,21 @@ async def finish_noncombat_patrol(session: AsyncSession, user: User, start: Patr
     return result
 
 
-def _roll_patrol_outcome(crime_level: int) -> dict:
+def _roll_patrol_outcome(crime_level: int, tier_rank: int = TIER_RANK_NONE) -> dict:
     """Higher city crime_level (built up by skipping patrol for /tutoring) skews the
-    odds toward crime encounters — more photo/donation opportunity, but more risk too."""
+    odds toward crime encounters — more photo/donation opportunity, but more risk too.
+    Combat-Ready Patrols (Arachnid+ perk) adds a flat bonus on top, same lever, not a
+    guarantee — even crime_level maxed at 100 only reaches ~66% combat odds in the
+    base game, so a 100% guarantee would exceed what's possible for anyone else by
+    design. +15 flat gets a booster to ~55% at crime_level 0, ~72% stacked with a
+    maxed crime_level."""
     biased = []
     for entry in LOOT_TABLES["patrol"]:
         weight = entry["weight"]
         if entry["key"] in ("crime_bronze", "crime_silver", "crime_gold"):
             weight += crime_level * CRIME_LEVEL_WEIGHT_BONUS
+            if tier_rank >= TIER_RANK_ARACHNID:
+                weight += COMBAT_READY_PATROLS_WEIGHT_BONUS
         biased.append({**entry, "weight": weight})
     return weighted_choice(biased)
 
