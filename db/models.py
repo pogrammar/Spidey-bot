@@ -231,3 +231,46 @@ class AdminUser(Base):
     granted_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, default=datetime.datetime.utcnow
     )
+
+
+class ShakedownAttempt(Base):
+    """One row per /shakedown that actually reached the resolver, existing for a single
+    question: is Stealth Mode's 20-minute inactivity threshold the right number?
+
+    It couldn't be answered before this table. A protected attempt returns early and
+    charges nobody, so unlike a success or a fail it left **no trace at all** — not even
+    a `transactions` row — and the perk's real firing rate was unobservable. Unlike Venom
+    Blast's multiplier (validated by simulation in scratch/combat_sim.py), this threshold
+    depends on how long real players step away from Discord, which no simulation can
+    supply. Only recorded attempts can settle it.
+
+    `target_idle_seconds` is stamped on **every** attempt, protected or not, and that's
+    the design: it makes any candidate threshold answerable from data already collected,
+    instead of needing a fresh instrumentation deploy per number under consideration.
+    Storing only a `was_protected` flag would answer for 20 minutes and nothing else.
+
+    Written outside the caller's transaction (see log_shakedown_attempt) so instrumentation
+    can never roll back real cash movement, and swallowing its own errors so a broken
+    telemetry write can never fail a player's command.
+    """
+
+    __tablename__ = "shakedown_attempts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    thief_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.discord_id"))
+    target_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.discord_id"))
+    # protected | success | caught — see shakedown_service.OUTCOME_*
+    outcome: Mapped[str] = mapped_column(String)
+    # None when the target has never run a command (last_active_at IS NULL), which is
+    # itself the reason Stealth Mode can't fire for them — distinct from "idle 0 seconds".
+    target_idle_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The target's tier rank at attempt time. Needed to separate "wasn't idle long enough"
+    # from "wasn't subscribed", and to read the idle distribution of non-subscribers as a
+    # stand-in population while the Symbiote sample is still small.
+    target_tier_rank: Mapped[int] = mapped_column(Integer)
+    amount: Mapped[int] = mapped_column(Integer)
+    target_wallet: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, default=datetime.datetime.utcnow
+    )
+
