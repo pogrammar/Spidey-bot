@@ -53,13 +53,23 @@ from utils.v2_embeds import StaticView
 # (which is what this did until 2026-08-22) advertises the same vial-free patrol
 # twice under two different names and reads like Biomorphic is a sidegrade sitting
 # next to Organic rather than the thing Organic became.
+#
+# The three bonus rolls do NOT all fire everywhere, so the line says where each one
+# applies. Cash (BIOMORPHIC_WEBBING_CASH_CHANCE, 0.25) is rolled on both patrol paths —
+# patrol_service for a quiet patrol, battle_service after a fight — so it's promised
+# unqualified. The component and photo rolls (0.20 each) exist only in battle_service,
+# so they're only ever on the table for a combat patrol, and the photo additionally
+# needs a camera equipped. Promising all three flatly (which this did until 2026-08-22)
+# tells a subscriber who mostly runs quiet patrols to expect two rolls that can never
+# happen for them.
 ORGANIC_WEBBING_LINE = (
     "Organic Webbing — patrols never touch web-fluid vials or the no-fluid cash tax."
 )
 BIOMORPHIC_WEBBING_LINE = (
     "Biomorphic Webbing — Organic Webbing evolved. Everything it did (no vials, no "
-    "no-fluid cash tax) and the suit takes more than you told it to: extra chances at "
-    "bonus cash, a bonus component, and a bonus photo."
+    "no-fluid cash tax) and the suit takes more than you told it to: an extra chance at "
+    "bonus cash on every patrol, plus a bonus component and a bonus photo on combat "
+    "patrols."
 )
 
 ARACHNID_PERKS = [
