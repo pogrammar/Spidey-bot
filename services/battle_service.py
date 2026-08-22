@@ -212,6 +212,18 @@ BIOMORPHIC_WEBBING_PHOTO_CHANCE = 0.20  # only rolled if a camera's equipped and
 SONIC_DAMPENER_BOSS_NAME = "the Shocker"
 SONIC_DAMPENER_DAMAGE_INCREASE = 0.3
 
+
+def _is_sonic_dampener_boss(enemy_name: str | None) -> bool:
+    """Matches the Shocker on rematches too. patrol_service.boss_name() suffixes
+    repeat encounters with " (Round N)" once the 20-boss roster wraps, so the exact
+    equality this used until 2026-08-22 fired on bracket 4 and then never again —
+    "the Shocker (Round 2)" != "the Shocker". That made the Symbiote tier's ONLY
+    drawback a single encounter at reputation level 20 for every player alive, while
+    GAME_DESIGN claimed it recurred. Prefix-match so the suffix doesn't matter."""
+    if not enemy_name:
+        return False
+    return enemy_name == SONIC_DAMPENER_BOSS_NAME or enemy_name.startswith(f"{SONIC_DAMPENER_BOSS_NAME} (")
+
 # Round-by-round flavor — randomized per line so repeated battles don't read identical
 # every time. `{dmg}` / `{enemy}` get filled in where present.
 ATTACK_HIT_LINES = [
@@ -529,7 +541,7 @@ def _apply_counter_with_venom_blast(state: BattleState, dmg: int, tier_rank: int
     so a dampened hit correctly factors into whether Venom Blast would even
     trigger — a real cost, not just cosmetic extra damage after the fact."""
     dampener_note = ""
-    if tier_rank >= TIER_RANK_SYMBIOTE and dmg > 0 and state.enemy_name == SONIC_DAMPENER_BOSS_NAME:
+    if tier_rank >= TIER_RANK_SYMBIOTE and dmg > 0 and _is_sonic_dampener_boss(state.enemy_name):
         dmg = round(dmg * (1 + SONIC_DAMPENER_DAMAGE_INCREASE))
         dampener_note = random.choice(SONIC_DAMPENER_LINES) + _symbiote_tag()
 
