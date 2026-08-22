@@ -61,8 +61,8 @@ class AllyCog(commands.Cog):
         if tier_rank >= TIER_RANK_ARACHNID:
             arachnid = emoji("arachnid") or ""
             footer_lines.append(
-                f"{arachnid} Bonded with the spider, your allies keep a closer eye on you now — "
-                f"happiness slips faster than it used to.".strip()
+                f"{arachnid} They're holding onto Peter Parker harder than they used to — "
+                f"and they're right to. Show up, or happiness slips faster than it used to.".strip()
             )
         view = StaticView("Who You're Neglecting", field_groups=field_groups, footer_lines=footer_lines)
         await ctx.respond(view=view, files=view.files)

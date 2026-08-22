@@ -27,11 +27,14 @@ DECAY_PER_HOUR = 100 / FULL_DECAY_HOURS  # 4.17/hour
 # baseline this stretches the full drain to ~34h.
 SUPPORTIVE_ALLIES_DECAY_MULTIPLIER = 0.7
 
-# The Arachnid tier's one drawback — bonded with the spider, allies keep a closer
-# eye on you now, so happiness slips faster if you don't show up. +50% takes the
-# full drain from 24h down to 16h (24 / 1.5 = 16), and thriving->neglected from
-# 9.6h to 6.4h. Always-on for tier_rank >= ARACHNID, no choice involved — unlike
-# Supportive Allies above, this isn't opt-in.
+# The Arachnid tier's one drawback. The narrative isn't neglect and it isn't the
+# allies being needy — they're holding onto Peter Parker on purpose, because the
+# further the bond takes him the less of him comes back. Visiting is what keeps
+# Peter *Peter* instead of letting the thing underneath off its leash. Same reason
+# the cost scales with the tier: the deeper the bond, the harder they have to hold.
+# +50% takes the full drain from 24h down to 16h (24 / 1.5 = 16), and
+# thriving->neglected from 9.6h to 6.4h. Always-on for tier_rank >= ARACHNID, no
+# choice involved — unlike Supportive Allies above, this isn't opt-in.
 ARACHNID_ALLY_DECAY_INCREASE = 0.5
 
 PLAIN_VISIT_BOOST = 20  # a gift-free visit — free, modest, resets gift burnout

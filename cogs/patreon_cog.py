@@ -52,8 +52,9 @@ ARACHNID_PERKS = [
     "Combat-Ready Patrols — better odds of landing a crime encounter.",
 ]
 ARACHNID_DRAWBACKS = [
-    "Your allies need you more — happiness decays 50% faster, so a full meter runs "
-    "dry in 16 hours instead of 24.",
+    "The people who know Peter Parker are holding onto him harder — happiness decays "
+    "50% faster, so a full meter runs dry in 16 hours instead of 24. Keep showing up "
+    "as Peter, or there won't be much Peter left to come back to.",
 ]
 SYMBIOTE_PERKS = [
     "Venom Blast — the hit that would end a boss fight is absorbed and countered instead (once per fight).",
@@ -91,7 +92,8 @@ ARACHNID_INTRO = (
 )
 SYMBIOTE_INTRO = (
     "You've **bonded with the Symbiote Spider**. The bond runs deeper than the "
-    "Arachnid's — you keep every bit of that, and the suit answers back now."
+    "Arachnid's — you keep every bit of that, and the suit answers back now. "
+    "It's on your side. That's not the same as it being safe."
 )
 NO_PLEDGE_INTRO = (
     "Your Patreon account is connected. There's no active pledge on it right now, so "
