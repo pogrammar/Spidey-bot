@@ -86,6 +86,8 @@ SYMBIOTE_PERKS = [
     "Stealth Mode — full /shakedown immunity while you've been inactive 20+ minutes.",
 ]
 SYMBIOTE_DRAWBACKS = [
+    "The suit overrides you when you try to hold back — sometimes a Dodge comes out as "
+    "an attack instead. It never overrides an attack. It doesn't need to.",
     "Sonic Dampener — the Shocker's frequency cuts through the bond. +30% incoming "
     "damage from him specifically.",
 ]

@@ -213,6 +213,59 @@ BIOMORPHIC_WEBBING_PHOTO_CHANCE = 0.20  # only rolled if a camera's equipped and
 SONIC_DAMPENER_BOSS_NAME = "the Shocker"
 SONIC_DAMPENER_DAMAGE_INCREASE = 0.3
 
+# Venom Blast (Symbiote+ perk) — the counter-damage the absorbed hit is paid back as,
+# as a multiple of one ordinary Attack roll. 2x is what the player-facing copy promises
+# ("twice as hard" / "pays it back double"), so this is a number the copy is bound to,
+# not a free tuning knob — moving it means rewriting VENOM_BLAST_LINES and the
+# /patreon perks line too. Named rather than left inline (it was a bare `* 2` until
+# 2026-08-22) so the sim in scratch/combat_sim.py can sweep it, and so the one number
+# GAME_DESIGN quotes is greppable.
+#
+# Measured, not asserted: because it multiplies attack_damage_range, which scales with
+# difficulty on the same curve as enemy HP, the blast is worth a near-constant ~32% of
+# the boss's health bar from bracket 1 through the level-100 cap. That self-scaling is
+# the entire reason it's a multiple of an attack roll instead of a flat figure.
+VENOM_BLAST_DAMAGE_MULTIPLIER = 2
+
+# The Symbiote tier's own always-on cost (GAME_DESIGN.md §9.3). Every other Symbiote
+# drawback is conditional — Sonic Dampener is one boss out of twenty, the ally-decay
+# penalty is inherited from Arachnid — so the top tier had nothing that cost it anything
+# on an ordinary patrol. This is that: some rounds the bond takes the wheel.
+#
+# Scoped to Evade on purpose, and NOT to Attack or gadgets:
+#
+#   * Attack is already aggression. There's nothing for the suit to override, and a
+#     player who only ever attacks is already fighting the way it wants — so the perk
+#     that overrides restraint correctly never fires for them.
+#   * Gadgets are scarce, deliberately chosen, and carry durability, so silently
+#     swallowing one reads as a lost item rather than a lost impulse. The boss win-rate
+#     benchmark in ENEMY_STATS["boss"] also assumes proactive defensive gadget use, and
+#     overriding those would move that number without a cheap way to re-measure it
+#     (scratch/combat_sim.py is gadget-free — see its docstring for why).
+#
+# So the rule the copy can state honestly is: the suit overrides you when you try to
+# hold back. Measured at 0.10 (scratch/combat_sim.py override), against an
+# Evade->Attack policy, versus the identical fight with the override off:
+#
+#   boss bracket 1 / 5 / 10 / 20   -1.14% / -1.58% / -5.63% / -4.58% win rate
+#   crime bronze / silver / gold    -0.68..-0.99% / -1.14..-1.30% / -0.18..-0.73%
+#   visibility                     29.3% of boss fights, 24.8% of crime patrols
+#
+# Negative everywhere, worst exactly where the stakes are highest, and seen in roughly
+# one fight in four. Higher rates were rejected: 0.15 costs -7.87% on a boss, which
+# drops a paying subscriber below the 70-75% win rate an unsubscribed player with a
+# fully-upgraded gadget kit gets, and a perk you pay for should never do that.
+#
+# Two shapes were priced and rejected outright, both worth recording so they don't get
+# re-proposed. Making the override hit *harder* (a guaranteed 1.5x, borrowing the combo
+# constants) turns it into a straight buff at every rate (+3.16% boss, +10.41% crime at
+# 0.15) — the user asked for a cost, and that isn't one. Adding a suit tear on top of
+# that moves crime-tier win rate by exactly 0.00%, because suit integrity is cosmetic
+# inside a crime fight; it only bills you for repairs afterward. That's the structural
+# reason this is a plain attack: in crime patrols defense is worthless, so *any*
+# override toward aggression that also improves the swing is free-to-positive there.
+SYMBIOTE_OVERRIDE_CHANCE = 0.10
+
 
 def _is_sonic_dampener_boss(enemy_name: str | None) -> bool:
     """Matches the Shocker on rematches too. patrol_service.boss_name() suffixes
@@ -517,6 +570,22 @@ SONIC_DAMPENER_LINES = [
     " The dampeners scream, the bond flinches, and you feel that hit properly.",
 ]
 
+# The override's copy (SYMBIOTE_OVERRIDE_CHANCE). Every line has to make the same thing
+# unmistakable: you pressed Dodge and you are about to read an attack. A player who
+# can't tell why the button did something else reads it as a bug, and this is a cost
+# they're paying for a subscription — it has to be legible as a cost. The emoji tag is
+# appended at the call site, per the attribution rule in GAME_DESIGN.md §9.
+SYMBIOTE_OVERRIDE_LINES = [
+    "You move to break away — the suit doesn't. It drives you straight back in.",
+    "You go to dodge. The bond has other plans, and the bond is faster.",
+    "Your weight shifts to disengage and the symbiote overrules it, hard.",
+    "You want distance. It wants contact. It wins.",
+    "The dodge never happens — something under the suit decides you're attacking.",
+    "You pull back and the suit pulls harder the other way.",
+    "Your feet are already moving before you agreed to any of this.",
+    "You call for a dodge. The symbiote answers with a lunge.",
+]
+
 
 @dataclass
 class CounterOutcome:
@@ -558,7 +627,7 @@ def _apply_counter_with_venom_blast(state: BattleState, dmg: int, tier_rank: int
     )
     if tier_rank >= TIER_RANK_SYMBIOTE and not state.venom_blast_used and would_deplete:
         state.venom_blast_used = True
-        bonus = rand_range(state.attack_damage_range) * 2
+        bonus = rand_range(state.attack_damage_range) * VENOM_BLAST_DAMAGE_MULTIPLIER
         state.enemy_hp = max(0, state.enemy_hp - bonus)
         # The dampener note is deliberately dropped on this path: Venom Blast negates
         # the hit entirely, so there's no extra damage left to explain, and printing
@@ -611,6 +680,19 @@ def resolve_attack(state: BattleState, tier_rank: int = TIER_RANK_NONE) -> str:
 
 
 def resolve_evade(state: BattleState, tier_rank: int = TIER_RANK_NONE) -> str:
+    # Symbiote's always-on cost, resolved before anything else so the forfeited Evade is
+    # total: no damage reduction on the incoming counter, and — because combo_ready is
+    # set below rather than here — no combo banked for next round either. Delegating to
+    # resolve_attack rather than duplicating it keeps Enhanced Strength, Venom Blast and
+    # the Sonic Dampener all applying normally to the round the suit stole.
+    #
+    # It does still *consume* a combo banked by a previous Evade, which is the one way
+    # this cuts in the player's favour: the suit cashes in an opening you were about to
+    # waste by dodging again. Deliberate, and already priced into the measured cost.
+    if tier_rank >= TIER_RANK_SYMBIOTE and random.random() < SYMBIOTE_OVERRIDE_CHANCE:
+        override_line = random.choice(SYMBIOTE_OVERRIDE_LINES) + _symbiote_tag()
+        return f"{override_line} {resolve_attack(state, tier_rank)}"
+
     state.combo_ready = True
     counter = _enemy_counter(state, EVADE_DAMAGE_MULTIPLIER)
     outcome = _apply_counter_with_venom_blast(state, counter, tier_rank)
