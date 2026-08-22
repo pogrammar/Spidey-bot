@@ -193,8 +193,12 @@ class Brew(Base):
 class PatreonLink(Base):
     """A user's linked Patreon account — independent of any Discord server or role,
     since these perks are meant to be worldwide (see services/patreon_service.py).
-    tier is re-checked periodically using refresh_token, not just set once at link
-    time, so a lapsed/downgraded pledge actually stops granting perks."""
+
+    tier is re-read from Patreon on a schedule rather than only at link time, so a
+    lapsed or downgraded pledge actually stops granting perks — refresh_stale_links()
+    picks up the oldest last_checked_at rows and the scheduler cog drains that queue.
+    Only a successful read may rewrite tier; a Patreon outage stamps last_checked_at
+    and leaves the tier alone, so a paying subscriber never loses perks to a 503."""
 
     __tablename__ = "patreon_links"
 

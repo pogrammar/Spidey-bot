@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import datetime
 import secrets
 import time
+from dataclasses import dataclass
 from urllib.parse import urlencode
 
 import aiohttp
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import config
@@ -220,3 +223,203 @@ async def handle_callback(session: AsyncSession, code: str, state: str) -> tuple
     await session.commit()
 
     return discord_id, tier
+
+
+# --------------------------------------------------------------------------- refresh loop
+#
+# Without this, a tier was written once at link time and never re-read, so cancelling a
+# pledge kept every perk forever — the PatreonLink docstring claimed a periodic re-check
+# that did not exist. This is that re-check.
+#
+# THE ONE RULE: only a successful read of Patreon's identity endpoint may change a stored
+# tier. Every other path leaves it exactly as it was. A Patreon outage, a DNS blip, a 503
+# — none of them may take perks away from someone who is paying. Erring in this direction
+# means a lapsed pledge keeps its perks for up to one extra interval, which is the correct
+# side to be wrong on.
+REFRESH_STALE_AFTER = datetime.timedelta(hours=6)
+# Cap per tick so one hot loop can't hammer Patreon, and so a persistently failing link
+# can't starve the rest of the queue (rows are taken oldest-checked-first).
+REFRESH_BATCH_SIZE = 25
+# How often the scheduler drains that queue. 15min x 25 = 2,400 checks a day, which
+# re-reads every subscriber several times over at any subscriber count this bot will
+# realistically see, while staying far under Patreon's rate limits. Deliberately much
+# shorter than REFRESH_STALE_AFTER: the tick is how fast the queue drains, the staleness
+# window is how often any one link is actually re-read.
+PATREON_TICK_INTERVAL_MINUTES = 15
+
+
+class _TransientPatreonError(Exception):
+    """Couldn't reach Patreon, or Patreon couldn't answer right now. Fail open — the
+    stored tier is left untouched and the link is simply re-checked next cycle."""
+
+
+class _DeadLinkError(Exception):
+    """Patreon authoritatively refused our credentials *and* refused to refresh them.
+    Retrying can never help — only the user re-running /patreon link can. Distinct from
+    transient precisely because the fail-open rule must NOT apply: a credential we can
+    never verify again is not an outage, and going on granting paid perks off one would
+    reopen the exact hole this loop exists to close."""
+
+
+class _AuthExpiredError(Exception):
+    """Internal only: the access token was rejected, so a refresh is worth trying."""
+
+
+@dataclass
+class RefreshOutcome:
+    """What one refresh attempt established. `reached_patreon` is the important field —
+    it's the difference between "they have no pledge" and "we couldn't tell", which is
+    the whole fail-open contract and is exactly what a bare `tier: str | None` return
+    could not express."""
+
+    reached_patreon: bool
+    tier: str | None = None
+    previous_tier: str | None = None
+    dead_link: bool = False
+    error: str | None = None
+
+    @property
+    def changed(self) -> bool:
+        return self.reached_patreon and self.tier != self.previous_tier
+
+    @property
+    def rank_delta(self) -> int:
+        """Negative when the refresh cost the user perks — the case worth logging loudly."""
+        return tier_rank_from_name(self.tier) - tier_rank_from_name(self.previous_tier)
+
+
+async def _get_identity(http: aiohttp.ClientSession, access_token: str) -> dict:
+    try:
+        async with http.get(
+            IDENTITY_URL,
+            # Same explicit fields[tier] as handle_callback — without it the tier
+            # relationship comes back stripped to type+id and _extract_tier can't tell
+            # "no title" from "no tier", which here would read as a cancelled pledge.
+            params={"include": "memberships.currently_entitled_tiers", "fields[tier]": "title"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        ) as resp:
+            if resp.status in (401, 403):
+                raise _AuthExpiredError()
+            if resp.status != 200:
+                raise _TransientPatreonError(f"identity returned HTTP {resp.status}")
+            return await resp.json()
+    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        raise _TransientPatreonError(f"identity request failed: {exc!r}") from exc
+
+
+async def _refresh_tokens(http: aiohttp.ClientSession, link: PatreonLink) -> tuple[str, str, int]:
+    """Trades the stored refresh token for a fresh pair. A 4xx here is authoritative:
+    Patreon is saying this grant is gone (revoked, or already rotated away), which no
+    amount of retrying fixes."""
+    try:
+        async with http.post(
+            TOKEN_URL,
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": link.refresh_token,
+                "client_id": config.PATREON_CLIENT_ID,
+                "client_secret": config.PATREON_CLIENT_SECRET,
+            },
+        ) as resp:
+            if 400 <= resp.status < 500:
+                raise _DeadLinkError(f"refresh grant rejected with HTTP {resp.status}")
+            if resp.status != 200:
+                raise _TransientPatreonError(f"token refresh returned HTTP {resp.status}")
+            tokens = await resp.json()
+    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        raise _TransientPatreonError(f"token refresh failed: {exc!r}") from exc
+
+    access = tokens.get("access_token")
+    if not access:
+        raise _TransientPatreonError("token refresh returned no access_token")
+    # Patreon hands back a new refresh token on use; keep the old one if it doesn't, so a
+    # response without one can't blank the field and turn a live link into a dead one.
+    return access, tokens.get("refresh_token") or link.refresh_token, tokens.get("expires_in", 2678400)
+
+
+async def refresh_link(session: AsyncSession, link: PatreonLink) -> RefreshOutcome:
+    """Re-reads one link's current tier from Patreon and writes it back.
+
+    Commits on every path that changes a row, including the fail-open ones — a failed
+    check still stamps last_checked_at so the link rejoins the back of the queue instead
+    of being retried every single tick forever. The tier itself is only ever written from
+    a successful identity read.
+    """
+    previous = link.tier
+    now = datetime.datetime.utcnow()
+
+    if not config.PATREON_CLIENT_ID or not config.PATREON_CLIENT_SECRET:
+        # Nothing to check against. Deliberately does NOT stamp last_checked_at: this is
+        # a local misconfiguration, not an attempt, and once the credentials are set the
+        # queue should still be in its true order.
+        return RefreshOutcome(reached_patreon=False, previous_tier=previous,
+                              error="Patreon credentials aren't configured")
+
+    try:
+        async with aiohttp.ClientSession() as http:
+            try:
+                identity = await _get_identity(http, link.access_token)
+            except _AuthExpiredError:
+                access, refresh, expires_in = await _refresh_tokens(http, link)
+                # Committed immediately, before the identity call: Patreon rotates
+                # refresh tokens on use, so if the process died between here and the end
+                # of this function the stored token would already be spent and the next
+                # cycle would read invalid_grant and declare a paying subscriber dead.
+                link.access_token = access
+                link.refresh_token = refresh
+                link.token_expires_at = now + datetime.timedelta(seconds=expires_in)
+                await session.commit()
+                try:
+                    identity = await _get_identity(http, access)
+                except _AuthExpiredError as exc:
+                    # Rejected a token Patreon minted seconds ago — that's Patreon's
+                    # problem, not a dead grant, so it stays fail-open.
+                    raise _TransientPatreonError("identity rejected a freshly issued token") from exc
+    except _DeadLinkError as exc:
+        link.tier = None
+        link.last_checked_at = now
+        await session.commit()
+        return RefreshOutcome(reached_patreon=True, tier=None, previous_tier=previous,
+                              dead_link=True, error=str(exc))
+    except _TransientPatreonError as exc:
+        link.last_checked_at = now
+        await session.commit()
+        return RefreshOutcome(reached_patreon=False, previous_tier=previous, error=str(exc))
+
+    tier = _extract_tier(identity)
+    link.tier = tier
+    link.last_checked_at = now
+    # patreon_user_id is deliberately not rewritten here. If it ever differs the row is
+    # for a different Patreon account than it was, which /patreon link handles properly;
+    # silently reassigning it in a background job would hide that.
+    await session.commit()
+    return RefreshOutcome(reached_patreon=True, tier=tier, previous_tier=previous)
+
+
+async def refresh_stale_links(session: AsyncSession) -> list[tuple[int, RefreshOutcome]]:
+    """One tick's worth of re-checks: the oldest-checked links past REFRESH_STALE_AFTER,
+    capped at REFRESH_BATCH_SIZE. Returns (discord_id, outcome) pairs for the caller to
+    log — deliberately returns rather than logs, so the service stays free of the cog's
+    logging conventions and is testable without capturing output."""
+    cutoff = datetime.datetime.utcnow() - REFRESH_STALE_AFTER
+    stmt = (
+        select(PatreonLink)
+        .where(PatreonLink.last_checked_at <= cutoff)
+        .order_by(PatreonLink.last_checked_at)
+        .limit(REFRESH_BATCH_SIZE)
+    )
+    links = list((await session.execute(stmt)).scalars())
+
+    results = []
+    for link in links:
+        # Sequential, not gathered: this is a background job with no deadline, and a
+        # burst of concurrent requests is exactly what gets an API client rate-limited.
+        #
+        # refresh_link commits per link, which is only safe here because async_session is
+        # built with expire_on_commit=False (db/base.py). With expiry on, that commit would
+        # expire every other object still in `links`, and reading the next link's
+        # access_token would need implicit IO — which raises MissingGreenlet under asyncio
+        # rather than lazy-loading. If that setting ever changes, load these as plain rows
+        # or re-fetch per iteration.
+        results.append((link.discord_id, await refresh_link(session, link)))
+    return results
