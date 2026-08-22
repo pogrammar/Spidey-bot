@@ -1,6 +1,6 @@
 # Spidey Bot — Game Design Reference
 
-A persistent, always-on-server Discord economy/RPG bot built on pycord, SQLAlchemy (async), and a global (single-server) economy. This document is the canonical reference for every number, formula, and system in the game as of **2026-08-21**. It exists so a future session (or a fresh context window) can pick up exact mechanics without re-deriving them from source. When in doubt, this file should match the code — if it doesn't, the code wins and this file is stale.
+A persistent, always-on-server Discord economy/RPG bot built on pycord, SQLAlchemy (async), and a global (single-server) economy. This document is the canonical reference for every number, formula, and system in the game as of **2026-08-22**. It exists so a future session (or a fresh context window) can pick up exact mechanics without re-deriving them from source. When in doubt, this file should match the code — if it doesn't, the code wins and this file is stale.
 
 Companion file: [CURRENT.md](CURRENT.md) covers in-progress work, open questions, and session-specific state. This file covers locked, implemented mechanics only.
 
@@ -176,6 +176,39 @@ Trigger chance = `min(0.9, base_chance + bonus_per_level * upgrade_level)`.
 
 Passive contexts (`/tutoring`, `/bugle submit` "jam" events) call `roll_gadget_effect`/`roll_gadget_wearout` with `gadget_key=None`, which picks randomly among whatever's equipped rather than letting the player choose.
 
+### 6.1 Arachnid+ Patreon-exclusive gadgets — Spider Bots & Electric Webbing
+Mechanically **ordinary gadgets** — same `"gadget"` category, same shop/equip/upgrade path, same `GADGET_EFFECTS`-driven Select/button flow in battle as the five in the table above (including normal wearout via `roll_gadget_wearout`, since they go through `resolve_gadget` like everything else). The only thing different about them is **purchase is gated**: `shop_service.ARACHNID_GATED_ITEM_KEYS = {"spider_bots", "electric_webbing", "camera_silver"}` — `buy_item` checks `get_tier_rank` and refuses non-Arachnid+ buyers with a "subscribe and /patreon link" message. Everyone still **sees** them in `/shop list`/`/shop browse` at full price (same visibility as a reputation-locked gadget, plus an inline 🕷️ "Patreon exclusive" branding note in `/shop browse`'s selected-item view) — only the purchase itself is blocked.
+
+(Earlier this session these briefly existed as always-on, tier-gated *passive* procs with no equip step at all — the original always-on shape §9.2 used to describe. That was reworked into the ordinary-gadget shape described here per explicit direction, since a passive/no-action version meant no button ever showed up for them in a patrol battle, which read as broken/missing rather than intentional.)
+
+| Gadget | Unlock lvl | Price | GADGET_EFFECTS kind | base_chance | bonus/level | Notes |
+|---|---|---|---|---|---|---|
+| Spider Bots | 8 | $550 | `bonus_damage` | 0.20 | +0.12 | Normal attack roll + `[5,12]` bonus damage; counter still resolves normally (no defensive component). |
+| Electric Webbing | 14 | $750 | `shock_burst` | 0.20 | +0.12 | Normal attack roll + `[8,15]` bonus damage, AND fully blocks the counter for that round (same "no counter" shape as Concussion Burst's `group_defense`). |
+
+Trigger chance formula is the same `min(0.9, base_chance + bonus_per_level * upgrade_level)` as the table above.
+
+### 6.2 Camera tiers — base camera & Silver-Grade Camera (Arachnid+ Patreon-exclusive)
+Implemented as **separate `"tool"` items**, not the `upgrade_level`-on-one-item design §9.5 originally sketched (that design is superseded by this — kept simpler to ship and to show up as a real second entry in `/shop browse`'s Gear section next to the base camera, per explicit direction). `patrol_service.CAMERA_FAMILY_KEYS = ["camera", "camera_silver"]` (ordered lowest to highest tier).
+
+- **Equip exclusivity**: buying either camera in the family auto-unequips whatever other camera-family tool was equipped before (handled in `shop_service.buy_item`'s tool branch) — only one is ever equipped at a time. `get_equipped_camera` (`patrol_service.py`) now searches the whole family and returns the highest-tier equipped row.
+- **`camera_silver`** — $1,000, Arachnid+-gated (`ARACHNID_GATED_ITEM_KEYS`), same durability/break-on-delete shape as the base camera. `patrol_service.CAMERA_TIER_STATS["camera_silver"] = {"break_chance_reduction": 0.70, "quality_bump_chance": 0.60}`:
+  - **Break-chance reduction**: `battle_service.finalize_battle` multiplies the existing break-chance formula (§5.5) by `(1 - break_chance_reduction)` before rolling.
+  - **Quality-bump chance**: `0.60` — **"3 in 5 times"**, set 2026-08-21, replacing the 0.325 that shipped as the midpoint of §9.5's original "30-35%" range. This one is **copy, not a balance knob**: the subscriber is told "3 in 5" outright, so it stays exactly 0.60 and the promise changes before the number does. Independent roll (`patrol_service.bump_photo_quality`) bumping the banked photo up one tier (bronze→silver→gold, capped at gold) *before* it's banked.
+  - **Attribution** (implemented 2026-08-21): `BattleReport.photo_quality_bumped` / `.photo_quality_before_bump` carry it out of `finalize_battle`, and `patrol_cog._render_final` renders a dedicated **"🕷️ Photo Upgraded"** row spelling out `Bronze → Silver`. `photo_quality_before_bump` is only set when the tier **actually changed** — on a gold-tier encounter the roll still fires but can't go higher, and the card must not claim an upgrade that didn't happen (verified: 0 false flags in 150 gold encounters).
+  - **Biomorphic Webbing's bonus photo** (§9.3) now takes **its own independent bump roll** off the same camera (changed 2026-08-21; it previously banked at the encounter's raw un-bumped quality). Same fight, same camera, two photos — the lens doesn't stop working for the second shot. Rolled separately rather than copying the first photo's result, so the two can legitimately bank at different qualities. This is a small **buff to the Symbiote tier**; one `if` in `finalize_battle` reverts it.
+- Camera **Gold** tier is still unbuilt — only base + Silver exist so far. Gold is assigned to the **Symbiote** tier (decided 2026-08-21), a step above Silver's Arachnid+ gate; numbers and implementation notes in §9.5. Its bump chance is **0.80 — "4 in 5"** (decided 2026-08-22; this **closes** the inverted-ladder question that was open here, see §9.5). Like Silver's 0.60 it is **copy, not a balance knob** — "4 in 5" deliberately parallels Silver's "3 in 5" so the two read as one ladder, while staying visibly short of a guarantee.
+
+**Locked camera ladder** (both knobs, all three tiers):
+
+| Tier | Break-chance reduction | Photo-bump chance | Price | Gate |
+|---|---|---|---|---|
+| `camera` | 0% | 0.00 | $150 | none (starter) |
+| `camera_silver` | -70% | 0.60 ("3 in 5") | $1,000 | Arachnid+ |
+| `camera_gold` | -85% | 0.80 ("4 in 5") | $3,000 | Symbiote — **unbuilt** |
+
+Neither knob ever reaches its extreme (-100% / 1.00) at any tier, on purpose: camera-break tension and the value of a genuine gold-crime photo both have to survive the top tier.
+
 ---
 
 ## 7. Economy Primitives
@@ -201,42 +234,70 @@ Passive contexts (`/tutoring`, `/bugle submit` "jam" events) call `roll_gadget_e
 
 `tier_rank` is computed once per `/patrol` invocation and threaded through every downstream call (`begin_patrol`/`begin_boss_patrol` → `PatrolBattleView.tier_rank` → every `resolve_*`/`finalize_battle` call for that fight).
 
-**Attribution rule** (applies to every perk below without exception): whenever a perk actually fires, the tier's emoji (`arachnid`/`symbiote` from `utils/icons.py`) plus explanatory text must appear inline in the same message — e.g. `"(Enhanced Strength) (🕷️ Arachnid)"` appended to the hit line. Never just a quietly bigger number.
+**Attribution rule** (applies to every perk below without exception): whenever a perk actually fires, the tier's emoji (`arachnid`/`symbiote` from `utils/icons.py`) alone must appear inline in the same message — e.g. `"(Enhanced Strength) 🕷️"` appended to the hit line. No accompanying tier-name text ("Arachnid"/"Symbiote") — the emoji alone carries the attribution. Never just a quietly bigger number.
+
+Helpers: `battle_service._arachnid_tag()`, `._symbiote_tag()`, and `._gated_gadget_tag(key)`. All three return `""` when the emoji is missing rather than raising, so a not-yet-uploaded emoji degrades to an untagged line instead of a broken fight.
+
+**Audit 2026-08-21 — the rule was aspirational; it is now implemented.** An audit found that of ten perk trigger points, only Enhanced Strength complied. Every gap below except the last was closed the same day:
+
+| Perk | Where | Status |
+|---|---|---|
+| Enhanced Strength | `battle_service.resolve_attack` | ✅ was already compliant — the reference pattern |
+| Silver camera photo bump | `finalize_battle` → `patrol_cog._render_final` | ✅ fixed — dedicated "Photo Upgraded" row, §6.2 |
+| Venom Blast | `_apply_counter_with_venom_blast` | ✅ fixed — `_symbiote_tag()` on the blast line |
+| Sonic Dampener | `_apply_counter_with_venom_blast` | ✅ fixed — emitted **no line at all** while silently multiplying incoming damage by 1.3. See §9.3 |
+| Biomorphic cash | `finalize_battle`, `finish_noncombat_patrol` | ✅ fixed — `biomorphic_cash` on both `BattleReport` and `PatrolResult`, rendered as subtext under Cash |
+| Biomorphic component | `finalize_battle` | ✅ fixed — was byte-identical to a base-game drop; now a subtext line under Scavenged |
+| Biomorphic bonus photo | `finalize_battle` | ✅ fixed — "Second Shot" row, and it now gets its own bump roll (§6.2) |
+| Spider Bots / Electric Webbing | `resolve_gadget` | ✅ tagged via `_gated_gadget_tag()`. A **taste call**, not a rule requirement — no tier check runs at use time and a lapsed subscriber keeps firing the ones they bought, so what's being attributed is *owning* them. Drop the one call in `resolve_gadget` to revert |
+| Combat-Ready Patrols | `patrol_service._roll_patrol_outcome` | ⚠️ **accepted gap** — a weight bonus applied *before* any outcome exists, so there is no moment to attribute. Naming it would mean claiming a specific encounter was caused by the perk, which isn't knowable |
+
+The sweep also fixed a real numeric bug it surfaced: Sonic Dampener multiplied the counter *inside* `_apply_counter_with_venom_blast` while all four call sites printed the **pre-multiplier** roll, so a dampened hit displayed less suit damage than it actually dealt. The helper now returns a `CounterOutcome` carrying the actually-applied `damage`, and every call site formats from that.
 
 ### 9.1 OAuth linking flow
 `/patreon link` → `build_authorize_url()` generates a random `state` token (kept in an in-memory `_pending` dict, 10-min TTL — a bot restart mid-link just means re-running the command, an acceptable tradeoff to avoid a throwaway DB table) → sent as a DM (or inline if already in DMs, or inline as fallback if DMs are closed) with a link-style button → Patreon redirects to `/patreon/callback` (served by the shared aiohttp app) → `handle_callback()` exchanges the code, fetches identity **with `fields[tier]=title`** (a v2 API quirk: without this explicit field request, a resource is stripped to just `type`+`id`, and tier detection silently breaks — this was a real bug found and fixed 2026-08-18) → upserts `PatreonLink` → sends a tier-specific welcome DM (`ARACHNID_WELCOME`/`SYMBIOTE_WELCOME`/`NO_PLEDGE_WELCOME` in `patreon_cog.py`).
 
 `/patreon status` shows the raw Patreon-reported tier string plus the resolved perk-tier label. `/patreon unlink` deletes the DB row only — does not touch the actual Patreon pledge.
 
+`/patreon perks` is the richer companion to `/patreon status` — a plain-English checklist of every perk actually active for the caller right now (built from `ARACHNID_PERK_LINES`/`SYMBIOTE_PERK_LINES` in `patreon_cog.py`, gated by the same `tier_rank` comparisons as everything else), plus an ownership check (owned vs. not-owned, per `InventoryItem`) for the Arachnid+-gated purchasable items (`ARACHNID_GATED_ITEM_KEYS` — Spider Bots, Electric Webbing, Silver-Grade Camera) since being Arachnid+ only unlocks the *ability* to buy those, it doesn't grant them.
+
 ### 9.2 Arachnid tier (rank 1) — implemented, live
 1. **Organic Webbing** — deterministic, not a chance roll: Arachnid+ patrols never touch `web_fluid_vial` inventory or the no-fluid cash tax, 100% of the time. `/lab brew` output is unaffected/still sellable.
 2. **Enhanced Strength** — `+30%` Attack damage (`ENHANCED_STRENGTH_DAMAGE_BONUS`), **crime-tier patrols only** (excluded from boss fights — that difficulty curve is tuned around full-strength numbers).
-3. **Electric Webbing** (`ELECTRIC_WEBBING_PROC_CHANCE = 0.20`) — only on a landed Attack (needs contact). Bonus `[8,15]` damage and **skips the enemy's counter for that round** (reuses the "clean kill skips counter" rule).
-4. **Spider Bots** (`SPIDER_BOTS_PROC_CHANCE = 0.20`) — passive, rolls after *any* action (Attack/Evade/Gadget). Bonus `[5,12]` damage, doesn't touch the counter at all (purely additive, unlike Electric Webbing).
-5. **Combat-Ready Patrols** — flat `+15` weight bonus to each crime-tier patrol-roll entry (`COMBAT_READY_PATROLS_WEIGHT_BONUS`).
-6. **Drawback (the only one)**: ally happiness decays `+30%` faster (`ARACHNID_ALLY_DECAY_INCREASE`), always-on, no opt-in. Framed narratively as "the bond makes your allies watch you more closely," not neglect.
+3. **Combat-Ready Patrols** — flat `+15` weight bonus to each crime-tier patrol-roll entry (`COMBAT_READY_PATROLS_WEIGHT_BONUS`).
+4. **Drawback (the only one)**: ally happiness decays `+30%` faster (`ARACHNID_ALLY_DECAY_INCREASE`), always-on, no opt-in. Framed narratively as "the bond makes your allies watch you more closely," not neglect.
 
-Both proc-chance perks (20%) were picked as *below* the existing gadget baseline (0.25–0.55) since they're always-on and cost no loadout slot — **not simulation-verified**, chosen by comparison only.
+**Electric Webbing and Spider Bots moved out of this list** (were originally a free always-on part of this tier, changed this session): they're now Arachnid+-gated *purchasable* gadgets — see §6.1 — rather than something every Arachnid+ subscriber gets automatically. Their proc chances (20% base) were picked as *below* the existing gadget baseline (0.25–0.55) — **not simulation-verified**, chosen by comparison only.
+
+**Visibility of the gated items — verified 2026-08-21, no work needed.** All three (`spider_bots`, `electric_webbing`, `camera_silver`) are visible to **everyone**, subscriber or not, by design: `shop_service.list_shop_items()` applies **no tier filter at all** (only `Item.price.is_not(None)`), and `ARACHNID_GATED_ITEM_KEYS` is consulted *exclusively* inside `buy_item`. `shop_cog._arachnid_branding()` marks them "🕷️ Patreon exclusive" in `/shop list` and `/shop browse`, and a non-subscriber's purchase attempt fails with a message pointing at `/patreon link`. The only thing that hides a gadget from `/shop browse` and the `/shop buy` autocomplete is the ordinary reputation lock (`_is_locked`), which applies identically to every gadget — Spider Bots `unlock_level 8`, Electric Webbing `14`, sitting inside the existing free-gadget ladder (5/10/15/20). Nothing tier-related suppresses them anywhere.
 
 ### 9.3 Symbiote tier (rank 2) — implemented, live — includes everything above plus:
-1. **Venom Blast** — boss fights only, once per fight. The hit that *would* deplete suit integrity to 0% is absorbed instead; player counters for `2x a normal attack roll` (self-scaling with difficulty by construction — the exact "2x" value was chosen because the original Monte Carlo tuning script (`scratch/boss_tune2.py`) didn't survive and a reconstruction attempt's baseline win rate didn't match the documented 70–75% benchmark, so a formula-based approximation was shipped instead of a demonstrably-wrong tuned constant). **Flagged for real validation** once there's play data. Checked *before* the boss-clear-promotion logic, applied inside `_apply_counter_with_venom_blast()`.
-2. **Biomorphic Webbing** — three independent rolls (not one shared roll — copy promises "coins, photos, AND parts"):
-   - `BIOMORPHIC_WEBBING_CASH_CHANCE = 0.25` → +$15–35 (applies to combat *and* non-combat patrols — lives in `patrol_service.py`, imported into `battle_service.py`).
-   - `BIOMORPHIC_WEBBING_COMPONENT_CHANCE = 0.20` → bonus component drop, **only rolled if the base drop_chance roll already missed** (never stacks into a guaranteed double-drop). Combat only.
-   - `BIOMORPHIC_WEBBING_PHOTO_CHANCE = 0.20` → bonus second `PendingPhoto`, only if a camera's equipped and a photo was already banked this fight. Combat only.
+1. **Venom Blast** — boss fights only, once per fight. The hit that *would* deplete suit integrity to 0% is absorbed instead; player counters for `2x a normal attack roll` (self-scaling with difficulty by construction — the exact "2x" value was chosen because the original Monte Carlo tuning script (`scratch/boss_tune2.py`) didn't survive and a reconstruction attempt's baseline win rate didn't match the documented 70–75% benchmark, so a formula-based approximation was shipped instead of a demonstrably-wrong tuned constant). **Flagged for real validation** once there's play data. Checked *before* the boss-clear-promotion logic, applied inside `_apply_counter_with_venom_blast()`, which returns a `CounterOutcome` (`damage` / `venom_line` / `dampener_note`) rather than a bare string — the three compose differently, and callers must format their damage readout from `outcome.damage` so a Sonic-Dampener-boosted hit doesn't print the pre-multiplier roll.
+2. **Biomorphic Webbing** — three independent rolls (not one shared roll — copy promises "coins, photos, AND parts"). All three now report themselves on the result card (§9 audit); each roll's own `BattleReport` field exists purely for that:
+   - `BIOMORPHIC_WEBBING_CASH_CHANCE = 0.25` → +$15–35 (applies to combat *and* non-combat patrols — lives in `patrol_service.py`, imported into `battle_service.py`). Reported via `BattleReport.biomorphic_cash` / `PatrolResult.biomorphic_cash` as subtext under the Cash value, since it isn't separate income — just a share of one number the player otherwise couldn't attribute.
+   - `BIOMORPHIC_WEBBING_COMPONENT_CHANCE = 0.20` → bonus component drop, **only rolled if the base drop_chance roll already missed** (never stacks into a guaranteed double-drop). Combat only. Reported via `biomorphic_component` — before 2026-08-21 this was byte-identical to a base-game drop, so the entire perk was invisible.
+   - `BIOMORPHIC_WEBBING_PHOTO_CHANCE = 0.20` → bonus second `PendingPhoto`, only if a camera's equipped and a photo was already banked this fight. Combat only. Reported via `biomorphic_photo` as a "Second Shot" row, and it now takes its own quality-bump roll off the equipped camera (§6.2).
 3. **Stealth Mode** — full (100%) `/shakedown` immunity while the *target* has been inactive ≥ `STEALTH_MODE_INACTIVITY_THRESHOLD_SECONDS (20 min)` (via `User.last_active_at`). Deliberately **not permanent** (rejected earlier as pay-to-win) — reads as "protected while you're not even playing," since shakedowns can hit online or offline players alike. When protected, the attacker's attempt fails with **no fail-penalty charged** ("they back off before getting close enough to get caught" — distinct flavor text from a normal failed attempt).
 4. **Sonic Dampener (drawback)** — `+30%` incoming counter damage (`SONIC_DAMPENER_DAMAGE_INCREASE`), scoped specifically to boss fights against **"the Shocker"** (`SONIC_DAMPENER_BOSS_NAME`) — the only one of the 20 bosses that thematically fits, since all 20 mechanically share one stat block (no per-boss attack-typing system exists). Applied *before* the Venom Blast check, so a dampened hit correctly factors into whether Venom Blast would even trigger. Since brackets cycle through all 20 names, this recurs for long-term players.
+   - **Now emits a line** (`SONIC_DAMPENER_LINES` + 🕸️, fixed 2026-08-21). It previously applied the multiplier in total silence, which read as the boss being tuned unfairly rather than as the tier's own stated cost — the worst possible failure mode for a *drawback*, since the player couldn't even tell it existed. The note is deliberately **suppressed when Venom Blast fires**: that path negates the hit outright, so there's no extra damage left to explain and "the blow never lands" would contradict itself. The dampener still counted — it's what pushed the hit lethal enough to trigger the blast.
+   - Copy is kept literal against the math: Venom Blast says "twice as hard" and is exactly 2×, so the dampener's lines say "uglier than it should" rather than claiming a multiple that +30% doesn't earn.
 
 ### 9.4 Explicitly NOT part of the Patreon roster (dormant, for a separate track)
-`PatreonLink.growth_perk_choice` (`"xp"` / `"allies"` / `None`), `ACCELERATED_GROWTH_XP_MULTIPLIER = 1.3` (economy.py), `SUPPORTIVE_ALLIES_DECAY_MULTIPLIER = 0.7` (ally_service.py) — this mechanism was originally wired to Patreon tier_rank via a `/patreon choose` command, which was a mistake later corrected (2026-08-18): it actually belongs to a **separate, not-yet-rebuilt Discord Server Booster perk track** (was built once, fully reverted per user instruction — see commits `76dbc26`/`a05e719`/`10a2c8f` area). `/patreon choose` has been removed. The code stays intact and dormant — do not delete it, do not re-wire it to Patreon; when the booster track gets rebuilt, gate it on Server Booster status instead.
+`PatreonLink.growth_perk_choice` (`"xp"` / `"allies"` / `None`), `ACCELERATED_GROWTH_XP_MULTIPLIER = 1.3` (economy.py), `SUPPORTIVE_ALLIES_DECAY_MULTIPLIER = 0.7` (ally_service.py) — this mechanism was originally wired to Patreon tier_rank via a `/patreon choose` command, which was a mistake later corrected (2026-08-18): it actually belongs to a **separate, not-yet-rebuilt Discord Server Booster perk track** (was built once, fully reverted per user instruction — see commits `76dbc26`/`a05e719`/`10a2c8f` area). `/patreon choose` has been removed. The code stays intact and dormant — do not delete it, do not re-wire it to Patreon; when the booster track gets rebuilt, gate it on Server Booster status instead. §9.5 now records which specific perks that rebuilt track owns.
 
-### 9.5 Not-yet-implemented booster/Patreon perk designs (locked numbers, no code yet)
-See [CURRENT.md](CURRENT.md) for status — these are fully speced but unbuilt:
-- **Higher Suit Integrity**: 25–35% less suit damage in crime-tier patrols only (boss fights untouched).
-- **Higher Reputation XP**: 25–35% bonus (same mechanism/chokepoint as §3's `add_reputation`).
-- **Supportive Allies**: 25–35% decay reduction on `DECAY_PER_HOUR`. **Mutually exclusive with Higher Reputation XP** — stacking them would compound past either's intended standalone rate (this exclusivity is what `growth_perk_choice` already encodes, one field one value).
-- **Quicker Web Brewing**: `BREW_DURATION` 5min → 3min (everyone, not tier-gated).
-- **Camera tiers** (Bronze/Silver/Gold, via the gadget `upgrade_level` pattern on the single `"camera"` item key): break-chance reduction Bronze -50% / Silver -70% / Gold -85%; photo-quality-bump chance Bronze +20% / Silver ~30-35% / Gold ~45-55% (bronze→silver→gold, no bump from gold). Upgrade cost: Silver $1,000, Gold $3,000. Icons already uploaded (`camera_bronze`/`camera_silver`/`camera_gold`).
+### 9.5 Not-yet-implemented perk designs (numbers locked, track assigned, no code yet)
+Five perks are fully speced with locked numbers but unbuilt. **Track ownership was decided 2026-08-21** — this was the long-standing open question (two tracks exist and had to not be conflated, see §9.4); it is now settled and no longer needs re-asking:
+
+**Server Booster track** (discord.gg/spider-man Nitro boosting — the track that was built once then fully reverted, commits `76dbc26`/`a05e719`; rebuilding it requires re-enabling the Discord **Members intent** to read boost status, so it is a live-bot config change, not just code):
+- **Higher Suit Integrity**: 25–35% less suit damage in crime-tier patrols only (boss fights untouched — that curve is tuned around full-strength numbers). Rejected alternative: raising the 100 integrity cap — `100` is hardcoded in 5 places including `repair_suit()`, which would silently reset a raised cap back to flat 100.
+- **Higher Reputation XP**: 25–35% bonus, applied at §3's `add_reputation` chokepoint — self-limiting by construction, since that function also enforces the boss-gate ceiling, so it can never skip a gate. Explicitly **no effect on boss-clear promotions** (those snap straight to the next level's floor, bypassing `add_reputation` entirely). Concretely: level 10→15 is ~144 patrols unboosted vs ~106 at +35%.
+- **Supportive Allies**: 25–35% decay reduction on `DECAY_PER_HOUR` (6.0/hr → thriving-to-neglected stretches from 6.7h to 9.5–11h). **Mutually exclusive with Higher Reputation XP** — stacking them compounds toward ~1.5–1.6x total XP rate instead of either perk's standalone ~1.3x, because ally happiness already gates ±20% XP/earnings on its own. This exclusivity is exactly what `growth_perk_choice` already encodes (one field, one value) and must be enforced at the grant site, not just documented.
+- **Quicker Web Brewing**: `BREW_DURATION` 5min → 3min. Note: the earlier locked design had this as ungated/everyone; per the 2026-08-21 decision it belongs to the Booster track. 3 minutes was chosen deliberately — it raises theoretical max vial coverage from ~30% to ~50% of back-to-back patrol demand, while 1.5min would let a non-subscriber replicate Organic Webbing (§9.2) through effort alone and undercut that perk. Cutting brew *time* by X% is **not** +X% throughput — it's inverse (-30% time = +43% throughput).
+
+**Symbiote tier** (Patreon rank 2 — the live, built track):
+- **Camera Gold tier** (`camera_gold`) — **-85%** break chance, photo-quality-bump chance **0.80** ("4 in 5", decided 2026-08-22), **$3,000**. Symbiote-only, a step above Silver's Arachnid+ gate (§6.2) — since Symbiote is a strict superset of Arachnid, a Symbiote subscriber can buy both. The 0.80 **supersedes an originally-locked ~45–55%**, which was written before Silver shipped at 0.60 and so sat *below* the lower tier, inverting the ladder; Gold had to beat 0.60 and now does. Implementation is a small, well-understood extension of the pattern Silver already shipped: a separate `"tool"` item, added to `patrol_service.CAMERA_FAMILY_KEYS`, plus a `CAMERA_TIER_STATS["camera_gold"]` entry — **not** the `upgrade_level`-on-one-item shape this section originally sketched (superseded by §6.2). Icon already uploaded (`camera_gold`). Full two-knob ladder table lives in §6.2; both knobs deliberately stop short of -100% / 1.00 so camera-break tension never fully disappears.
+
+**Explicitly cut, do not re-propose**: **Lower Cooldowns** (shortening `/patrol`'s 30s cooldown) was considered and dropped outright — even safe-looking percentages risk making the core loop feel spammy.
 
 ---
 
@@ -309,7 +370,8 @@ See [CURRENT.md](CURRENT.md) for status — these are fully speced but unbuilt:
 
 | Key | Category | Price | Notes |
 |---|---|---|---|
-| `camera` | tool | $150 | Starter item, auto-equipped on first contact (`get_or_create_user`). Durability 100. |
+| `camera` | tool | $150 | Starter item, auto-equipped on first contact (`get_or_create_user`). Durability 100. Part of `CAMERA_FAMILY_KEYS` (§6.2). |
+| `camera_silver` | tool | $1,000 | Arachnid+-gated (§6.2). Equipping it retires whatever camera-family tool was equipped before. |
 | `spandex_fabric` | component | $80 | Suit repair; also patrol scavenge drop. |
 | `micro_electronics` | component | $150 | Suit repair (heavy damage); also patrol scavenge drop. |
 | `web_fluid_vial` | collectible | not sold | Brewed only (`/lab brew`), or Trade Post. |
@@ -322,6 +384,8 @@ See [CURRENT.md](CURRENT.md) for status — these are fully speced but unbuilt:
 | `ricochet_web` | gadget | $500 | Unlock lvl 10. |
 | `upshot` | gadget | $650 | Unlock lvl 15. |
 | `concussion_burst` | gadget | $900 | Unlock lvl 20. |
+| `spider_bots` | gadget | $550 | Unlock lvl 8. Arachnid+-gated (§6.1). |
+| `electric_webbing` | gadget | $750 | Unlock lvl 14. Arachnid+-gated (§6.1). |
 
 ---
 
@@ -331,17 +395,18 @@ See [CURRENT.md](CURRENT.md) for status — these are fully speced but unbuilt:
 `list_shop_items()` = every `Item` row where `price IS NOT NULL` (i.e. every item in §18's table — `web_fluid_vial`/`unstable_web_fluid` are excluded, they're never shop-sellable, only brewed/dropped).
 
 Three commands:
-- **`/shop list`** — paginated read-only catalog, split into the same 3 sections `/shop browse` uses (Gear = tool+component, Gifts, Gadgets). Locked gadgets (reputation level too low) show a locked-icon note instead of a price — visible to everyone, never hidden, so non-qualifying players see what they're missing.
-- **`/shop browse`** — interactive `ShopBrowseView`: Prev/Next flips between the 3 sections, a `Select` picks an item within the section, a `Buy` button purchases in place and re-renders with a result banner. Locked gadgets are filtered out entirely here (not just marked) since there's nothing useful to select.
-- **`/shop buy <item>`** — direct one-shot buy via autocomplete (`shop_item_autocomplete`, live-queries the catalog, excludes anything locked for the calling user).
+- **`/shop list`** — paginated read-only catalog, split into the same 3 sections `/shop browse` uses (Gear = tool+component, Gifts, Gadgets). Locked gadgets (reputation level too low) show a locked-icon note instead of a price — visible to everyone, never hidden, so non-qualifying players see what they're missing. Arachnid+-gated items (`ARACHNID_GATED_ITEM_KEYS`) show a 🕷️ "Patreon exclusive" branding line ahead of the description — still fully visible and priced, only the *purchase* is blocked (see below).
+- **`/shop browse`** — interactive `ShopBrowseView`: Prev/Next flips between the 3 sections, a `Select` picks an item within the section, a `Buy` button purchases in place and re-renders with a result banner. Locked gadgets are filtered out entirely here (not just marked) since there's nothing useful to select; Arachnid+-gated items stay selectable (same branding note shown when selected) so the buy attempt itself surfaces the subscribe message.
+- **`/shop buy <item>`** — direct one-shot buy via autocomplete (`shop_item_autocomplete`, live-queries the catalog, excludes anything locked for the calling user — Arachnid-gated items still included, same reasoning as browse).
 
 **`buy_item(session, user, item_key)` purchase logic** — this is the one real chokepoint for every purchase:
 1. Item must exist and have a price (else "not sold here").
 2. Gadgets: blocked if `unlock_level` isn't met yet.
-3. Tools (`camera` is the only one today): blocked if you already own an *equipped* copy — you can't double-buy a working camera. (If your existing copy is unequipped/broken, buying replaces it in place — same row, quantity reset to 1, durability reset to max, re-equipped.)
-4. Wallet must cover `item.price` (bank funds are **not** touched by `/shop buy`).
-5. On success: `add_wallet(-price)`, then branch by category —
-   - **tool**: upsert a single `InventoryItem` row per item_key, always `equipped=True`, `quantity=1`.
+3. Arachnid+-gated items (`ARACHNID_GATED_ITEM_KEYS = {"spider_bots", "electric_webbing", "camera_silver"}`, independent of category): blocked unless `get_tier_rank(...) >= TIER_RANK_ARACHNID`, with a "subscribe and /patreon link" message.
+4. Tools: blocked if you already own an *equipped* copy of that exact key — you can't double-buy a working camera. (If your existing copy is unequipped/broken, buying replaces it in place — same row, quantity reset to 1, durability reset to max, re-equipped.) Camera-family tools (`CAMERA_FAMILY_KEYS`, §6.2) are the one exception where buying a *different* key still succeeds — it just also unequips whichever other camera-family tool was equipped first.
+5. Wallet must cover `item.price` (bank funds are **not** touched by `/shop buy`).
+6. On success: `add_wallet(-price)`, then branch by category —
+   - **tool**: upsert a single `InventoryItem` row per item_key, always `equipped=True`, `quantity=1`. Camera-family purchases additionally unequip any other equipped camera-family row first.
    - **gadget**: always **inserts a brand-new row** — quantity 1, `equipped=False`, `durability=max`, `upgrade_level=0` — never merges into an existing stack. This is deliberate: each gadget copy tracks its own durability/upgrade level, and buying a spare after one breaks has to be a real, distinct purchase.
    - everything else (components, gifts): stacks via `add_item()` (`services/inventory_service.py`).
 
@@ -506,7 +571,7 @@ This is the part that matters for "data doesn't get deleted" — three distinct 
 3. **Individual item-level "deletion" is normal and expected**, not data loss: an `InventoryItem` row disappears when a stack hits 0 (`remove_item`), a gadget breaks (`roll_gadget_wearout` deletes the row outright — must be rebought), or a camera breaks (same). A `PendingPhoto`/`Brew`/`MarketListing`/`Cooldown` row disappearing when its lifecycle completes (sold, collected, bought/cancelled, expired) is the table doing exactly what it's for — none of these are logs, they're queues of in-flight state.
 
 ### 20.13 Migration history (Alembic, `alembic/versions/`)
-In order: baseline → admin_users (add table) → reputation XP curve rescale (the `LEVEL_GROWTH=1.12` accelerating curve, replacing a flat-100 system) → boss gates (add `boss_clears`, existing users grandfathered past gates they'd already cleared) → patreon_links (add table) → growth_perk_choice (add column to `patreon_links`) → last_active_at (add column to `users`, for Stealth Mode). All seven are applied to the local dev DB (`alembic current` confirms head = `df532d94924d`, the `last_active_at` migration) even though the latter two migration *files* are currently untracked in git — see [CURRENT.md](CURRENT.md) for that gap between "applied to the DB" and "committed to the repo."
+In order: baseline → admin_users (add table) → reputation XP curve rescale (the `LEVEL_GROWTH=1.12` accelerating curve, replacing a flat-100 system) → boss gates (add `boss_clears`, existing users grandfathered past gates they'd already cleared) → patreon_links (add table) → growth_perk_choice (add column to `patreon_links`) → last_active_at (add column to `users`, for Stealth Mode). All seven are applied to the local dev DB (`alembic current` confirms head = `df532d94924d`, the `last_active_at` migration) **and all seven files are tracked in git** (verified 2026-08-21 via `git ls-files alembic/versions/` — an earlier note here claimed the last two were untracked; that was stale, there is no repo/DB gap).
 
 ---
 
