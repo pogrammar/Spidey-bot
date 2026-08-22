@@ -272,6 +272,11 @@ class PatrolResult:
     web_fluid_used: bool = False
     web_fluid_tax: int = 0
     organic_webbing_active: bool = False
+    # Whether the vial-free patrol above is the Biomorphic grade rather than the
+    # Organic one. Purely a naming/attribution distinction — Biomorphic is what
+    # Organic grows into, so the vial-free behaviour is identical and this only
+    # decides which perk the card credits. Never true unless organic_webbing_active is.
+    biomorphic_webbing_active: bool = False
     ally_xp_bonus: bool = False
     difficulty_level: int = 1
     # How much of cash_gained came from Biomorphic Webbing (Symbiote+ perk), so the
@@ -289,6 +294,7 @@ class PatrolStart:
     web_fluid_used: bool
     web_fluid_tax: int
     organic_webbing_active: bool
+    biomorphic_webbing_active: bool
     difficulty: float
     xp_multiplier: float
 
@@ -300,7 +306,13 @@ async def _begin(session: AsyncSession, user: User, outcome: dict, tier_rank: in
     # as before — vials made that way are free to sell, just never spent by their
     # own patrols. web_fluid_used stays a separate flag from organic_webbing_active
     # since "-1 vial" would be a lie here — no vial was ever touched.
+    #
+    # At Symbiote the same behaviour is Biomorphic Webbing instead: Organic is its
+    # prerequisite and Biomorphic does everything it does plus the bonus rolls below,
+    # so this is one perk with two grades, not two perks that stack. Only the name
+    # the card credits changes, which is why the flag below is separate and derived.
     organic_webbing_active = tier_rank >= TIER_RANK_ARACHNID
+    biomorphic_webbing_active = tier_rank >= TIER_RANK_SYMBIOTE
     if organic_webbing_active:
         web_fluid_used = True
         web_fluid_tax = 0
@@ -321,6 +333,7 @@ async def _begin(session: AsyncSession, user: User, outcome: dict, tier_rank: in
         flavor=flavor,
         web_fluid_used=web_fluid_used,
         organic_webbing_active=organic_webbing_active,
+        biomorphic_webbing_active=biomorphic_webbing_active,
         web_fluid_tax=web_fluid_tax,
         difficulty=difficulty,
         xp_multiplier=xp_multiplier,
@@ -363,6 +376,7 @@ async def finish_noncombat_patrol(
         web_fluid_used=start.web_fluid_used,
         web_fluid_tax=start.web_fluid_tax,
         organic_webbing_active=start.organic_webbing_active,
+        biomorphic_webbing_active=start.biomorphic_webbing_active,
         ally_xp_bonus=start.xp_multiplier > 1.0,
         difficulty_level=user.reputation_level,
     )

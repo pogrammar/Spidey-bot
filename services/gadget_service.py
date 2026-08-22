@@ -26,6 +26,11 @@ GADGET_BASE_BREAK_CHANCE = 0.05  # per crime encounter while equipped, before le
 # pure defense (blocks a hit for zero offensive damage), so making it trigger more
 # often trades away kill-securing rounds rather than helping win — bumping its
 # chance further would make it worse, not better.
+#
+# base_chance is balanced against effect strength, NOT against unlock level — that's
+# why web_grabber (cash) sits at 0.55 while upshot (+50% XP) sits at 0.30. A big
+# effect earns a low chance; a small one has to be reliable to be worth a slot at all
+# (there are only MAX_EQUIPPED_GADGETS of them).
 GADGET_EFFECTS: dict[str, dict] = {
     "web_shooters": {"kind": "negate_damage", "base_chance": 0.25, "bonus_per_level": 0.05},
     "web_grabber": {"kind": "bonus_donation", "base_chance": 0.55, "bonus_per_level": 0.11, "cash_range": [30, 70]},
@@ -34,8 +39,25 @@ GADGET_EFFECTS: dict[str, dict] = {
     "concussion_burst": {"kind": "group_defense", "base_chance": 0.38, "bonus_per_level": 0.19, "magnitude": 0.5},
     # Arachnid+ Patreon-exclusive (purchase gated in shop_service.ARACHNID_GATED_ITEM_KEYS)
     # — mechanically just regular gadgets otherwise, same Select/button flow as the five above.
-    "spider_bots": {"kind": "bonus_damage", "base_chance": 0.20, "bonus_per_level": 0.12, "bonus_range": [5, 12]},
-    "electric_webbing": {"kind": "shock_burst", "base_chance": 0.20, "bonus_per_level": 0.12, "bonus_range": [8, 15]},
+    #
+    # Both were 0.20/0.12 until 2026-08-22, which made them the least reliable gadgets
+    # in the game outside the deliberately-exempt web_shooters: 1 in 5 at purchase, and
+    # only 56% fully upgraded, against a free ladder that starts as high as 0.55 and
+    # tops out near 0.90. Spider Bots cost MORE than ricochet_web ($550 vs $500) and
+    # fired at under half its rate. The original reasoning — "these are paid, so keep
+    # them under the 0.25-0.55 baseline" — guarded the right thing the wrong way: what
+    # keeps a paid gadget from being pay-to-win is a modest *effect*, not unreliable
+    # *delivery*. Firing 4 times in 5 doesn't read as balanced, it reads as broken.
+    #
+    # Their effects are flat damage adds (+5-12 / +8-15) — the weakest kind in the
+    # table, weaker than ricochet_web's scavenge boost or upshot's +50% XP — so by the
+    # rule above they belong at the reliable end. 0.45 seats them just above
+    # ricochet_web's 0.44 without reaching web_grabber's 0.55, and neither one takes
+    # the ceiling from concussion_burst. bonus_per_level now follows the same
+    # unlock-level tiering as everything else, interpolated off the free ladder
+    # (unlock 5 -> 0.11, 10 -> 0.14, 15 -> 0.145), which the old flat 0.12 ignored.
+    "spider_bots": {"kind": "bonus_damage", "base_chance": 0.45, "bonus_per_level": 0.13, "bonus_range": [5, 12]},
+    "electric_webbing": {"kind": "shock_burst", "base_chance": 0.45, "bonus_per_level": 0.145, "bonus_range": [8, 15]},
 }
 
 

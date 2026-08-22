@@ -46,8 +46,25 @@ TIER_RANK_LABELS = {
 # Perks and drawbacks are separate lists rather than one list with "Drawback:"
 # prefixes so each surface can frame them itself: the welcome gives the cost its own
 # section instead of burying it as the last bullet of the good news.
+
+# The webbing perk is ONE perk with two grades, not two perks. Biomorphic Webbing is
+# what Organic Webbing grows into — it does everything Organic does (no vials, no
+# no-fluid cash tax) and adds bonus rolls on top, and Organic is its prerequisite,
+# which the rank ladder already enforces for free since Symbiote > Arachnid. So
+# exactly one of these two lines ever renders. Listing both for a Symbiote subscriber
+# (which is what this did until 2026-08-22) advertises the same vial-free patrol
+# twice under two different names and reads like Biomorphic is a sidegrade sitting
+# next to Organic rather than the thing Organic became.
+ORGANIC_WEBBING_LINE = (
+    "Organic Webbing — patrols never touch web-fluid vials or the no-fluid cash tax."
+)
+BIOMORPHIC_WEBBING_LINE = (
+    "Biomorphic Webbing — Organic Webbing evolved. Everything it did (no vials, no "
+    "no-fluid cash tax) and the suit takes more than you told it to: extra chances at "
+    "bonus cash, a bonus component, and a bonus photo."
+)
+
 ARACHNID_PERKS = [
-    "Organic Webbing — patrols never touch web-fluid vials or the no-fluid cash tax.",
     "Enhanced Strength — +30% Attack damage on crime-tier patrols.",
     "Combat-Ready Patrols — better odds of landing a crime encounter.",
 ]
@@ -58,7 +75,6 @@ ARACHNID_DRAWBACKS = [
 ]
 SYMBIOTE_PERKS = [
     "Venom Blast — the hit that would end a boss fight is absorbed and countered instead (once per fight).",
-    "Biomorphic Webbing — extra chance at bonus cash, a bonus component, and a bonus photo.",
     "Stealth Mode — full /shakedown immunity while you've been inactive 20+ minutes.",
 ]
 SYMBIOTE_DRAWBACKS = [
@@ -120,23 +136,28 @@ def _perk_sections(tier_rank: int, owned_gated_items: set[str]) -> list[tuple[st
     """The perk breakdown shared by /patreon perks and the welcome DM, so the two can
     never drift. Symbiote is a strict superset of Arachnid, so its sections stack on
     top rather than replacing — including the drawbacks, which a Symbiote subscriber
-    inherits and therefore has to be told about too."""
+    inherits and therefore has to be told about too. The one exception is the webbing
+    perk, which upgrades in place instead of stacking (see ORGANIC_WEBBING_LINE)."""
     if tier_rank == TIER_RANK_NONE:
         return [(
             None,
             [("No active perks", "Subscribe at Arachnid or Symbiote and run /patreon link to connect.")],
         )]
 
-    perks = list(ARACHNID_PERKS)
+    is_symbiote = tier_rank >= TIER_RANK_SYMBIOTE
+
+    # Webbing leads the list at both tiers — it's the perk that changes every single
+    # patrol, so it's the one that should land first.
+    perks = [BIOMORPHIC_WEBBING_LINE if is_symbiote else ORGANIC_WEBBING_LINE, *ARACHNID_PERKS]
     drawbacks = list(ARACHNID_DRAWBACKS)
-    if tier_rank >= TIER_RANK_SYMBIOTE:
+    if is_symbiote:
         perks += SYMBIOTE_PERKS
         drawbacks += SYMBIOTE_DRAWBACKS
 
     # Emoji-only attribution, per the house rule — the tier's emoji carries the
     # attribution, never the tier name as text. Symbiote gets its own emoji rather
     # than reusing Arachnid's.
-    tier_e = emoji("symbiote" if tier_rank >= TIER_RANK_SYMBIOTE else "arachnid") or ""
+    tier_e = emoji("symbiote" if is_symbiote else "arachnid") or ""
     sections: list[tuple[str | None, list[tuple[str, str]]]] = [
         (f"{tier_e} Always On".strip(), [("", _bullets(perks))]),
         (f"{tier_e} What It Costs You".strip(), [("", _bullets(drawbacks))]),

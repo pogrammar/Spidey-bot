@@ -95,6 +95,17 @@ def _biomorphic_cash_line(amount: int) -> str:
     return f"\n-# {prefix}The webbing shook an extra ${amount:,} loose."
 
 
+def _webbing_note(biomorphic: bool) -> str:
+    """Credits the vial-free patrol to whichever grade of the webbing perk is actually
+    running. Organic and Biomorphic aren't two perks that stack — Biomorphic is what
+    Organic grows into, so a Symbiote subscriber has no Organic Webbing to speak of
+    any more and shouldn't be told a lower tier's perk is what saved them the vial.
+    Badge only, never the tier name (GAME_DESIGN.md §9)."""
+    badge = emoji("symbiote" if biomorphic else "arachnid") or ""
+    name = "Biomorphic Webbing" if biomorphic else "Organic Webbing"
+    return f"{badge} {name} — no vial needed".strip()
+
+
 def _cap(name: str) -> str:
     """Capitalizes just the first letter — str.capitalize() also lowercases the rest,
     which mangles names with their own internal capitals (e.g. "a Sable mercenary")."""
@@ -467,8 +478,7 @@ def _noncombat_view(result: PatrolResult, suit_warning: str | None) -> StaticVie
     fluid_field_name = item_label("web_fluid_vial", "Web Fluid")
     fields = []
     if result.organic_webbing_active:
-        arachnid = emoji("arachnid") or ""
-        fields.append((fluid_field_name, f"{arachnid} Organic Webbing — no vial needed".strip()))
+        fields.append((fluid_field_name, _webbing_note(result.biomorphic_webbing_active)))
     elif result.web_fluid_used:
         fields.append((fluid_field_name, "-1 vial"))
     else:
@@ -576,8 +586,7 @@ class PatrolCog(commands.Cog):
             await set_cooldown(session, user.discord_id, "patrol", lock_seconds)
 
         if start.organic_webbing_active:
-            arachnid = emoji("arachnid") or ""
-            fluid_note = f" ({arachnid} Organic Webbing — no vial needed)".replace("  ", " ")
+            fluid_note = f" ({_webbing_note(start.biomorphic_webbing_active)})"
         elif start.web_fluid_used:
             fluid_note = ""
         else:
