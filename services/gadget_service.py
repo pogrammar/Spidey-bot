@@ -37,7 +37,7 @@ GADGET_EFFECTS: dict[str, dict] = {
     "ricochet_web": {"kind": "scavenge_boost", "base_chance": 0.44, "bonus_per_level": 0.14, "magnitude": 0.25},
     "upshot": {"kind": "bonus_xp", "base_chance": 0.30, "bonus_per_level": 0.145, "magnitude": 0.5},
     "concussion_burst": {"kind": "group_defense", "base_chance": 0.38, "bonus_per_level": 0.19, "magnitude": 0.5},
-    # Arachnid+ Patreon-exclusive (purchase gated in shop_service.ARACHNID_GATED_ITEM_KEYS)
+    # Arachnid+ Patreon-exclusive (purchase gated in shop_service.GATED_ITEM_MIN_RANK)
     # — mechanically just regular gadgets otherwise, same Select/button flow as the five above.
     #
     # Both were 0.20/0.12 until 2026-08-22, which made them the least reliable gadgets

@@ -37,6 +37,23 @@ TIER_RANK_NONE = 0
 TIER_RANK_ARACHNID = 1
 TIER_RANK_SYMBIOTE = 2
 
+# Lives here rather than in patreon_cog so services can name a tier in player-facing
+# copy without importing a cog (wrong direction, and a circular import besides).
+TIER_RANK_LABELS = {
+    TIER_RANK_NONE: "None",
+    TIER_RANK_ARACHNID: "Arachnid",
+    TIER_RANK_SYMBIOTE: "Symbiote",
+}
+
+
+def tier_requirement_label(min_rank: int) -> str:
+    """How to name a tier *gate* in player-facing copy. Anything below the top rank
+    gets a "+" because higher tiers satisfy it too (Symbiote can buy Arachnid-gated
+    items); the top rank doesn't, since there's nothing above it to include and
+    "Symbiote+" would imply a tier that doesn't exist."""
+    label = TIER_RANK_LABELS[min_rank]
+    return f"{label}+" if min_rank < TIER_RANK_SYMBIOTE else label
+
 
 def tier_rank_from_name(tier: str | None) -> int:
     """Pure name -> rank mapping, no DB lookup — exposed separately from

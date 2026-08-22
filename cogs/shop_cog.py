@@ -7,7 +7,8 @@ from discord.ext import commands
 from db.base import async_session
 from db.models import Item
 from services.economy import get_or_create_user
-from services.shop_service import ARACHNID_GATED_ITEM_KEYS, buy_item, list_shop_items
+from services.patreon_service import TIER_RANK_SYMBIOTE
+from services.shop_service import GATED_ITEM_MIN_RANK, buy_item, list_shop_items
 from utils.embeds import error_embed
 from utils.icons import emoji, item_label
 from utils.v2_embeds import PaginatedView, StaticView, add_field_groups
@@ -45,14 +46,17 @@ def _is_locked(item: Item, user_level: int) -> bool:
     return item.category == "gadget" and item.unlock_level is not None and user_level < item.unlock_level
 
 
-def _arachnid_branding(item: Item) -> str:
-    """Arachnid+ Patreon-exclusive items (see shop_service.ARACHNID_GATED_ITEM_KEYS)
-    are visible to everyone, same as a reputation-locked gadget — this just marks
-    which ones need a subscription to actually buy, using the emoji alone (no
-    "Arachnid" text tacked on) per the same attribution convention battle text uses."""
-    if item.key not in ARACHNID_GATED_ITEM_KEYS:
+def _patreon_branding(item: Item) -> str:
+    """Patreon-gated items (see shop_service.GATED_ITEM_MIN_RANK) are visible to
+    everyone, same as a reputation-locked gadget — this just marks which ones need a
+    subscription to actually buy, using the emoji of the tier that gates it and no
+    tier-name text, per the same attribution convention battle text uses. The badge
+    tracks the gate: a Symbiote-only item wears the Symbiote emoji, so nobody reads an
+    Arachnid badge and assumes an Arachnid pledge is enough."""
+    min_rank = GATED_ITEM_MIN_RANK.get(item.key)
+    if min_rank is None:
         return ""
-    e = emoji("arachnid")
+    e = emoji("symbiote" if min_rank >= TIER_RANK_SYMBIOTE else "arachnid")
     return f"{e} Patreon exclusive" if e else "Patreon exclusive"
 
 
@@ -63,7 +67,7 @@ def _item_field(item: Item, user_level: int) -> tuple[str, str]:
             item_label(item.key, item.name),
             f"{lock_emoji} (gadget not unlocked — needs reputation level {item.unlock_level})",
         )
-    branding = _arachnid_branding(item)
+    branding = _patreon_branding(item)
     description = f"{branding}\n{item.description}" if branding else item.description
     return (f"{item_label(item.key, item.name)} — ${item.price:,}", description)
 
@@ -207,7 +211,7 @@ class ShopBrowseView(discord.ui.DesignerView):
         if banner:
             body = banner
         elif item is not None:
-            branding = _arachnid_branding(item)
+            branding = _patreon_branding(item)
             body = f"{branding}\n{item.description}" if branding else (item.description or "")
         else:
             body = "Pick something from the dropdown below."

@@ -23,13 +23,14 @@ from services.patrol_service import (
     roll_donation,
     roll_hazard,
 )
-# Combat reaching into the store looks odd, but this set is exactly "which items does
-# a subscription gate", which is the store's business and shouldn't be duplicated
-# here — a second copy would silently stop tagging the next gated gadget someone adds.
-# Only gadget keys are ever looked up against it (camera_silver lives in the same set
-# but never reaches resolve_gadget), so membership is a safe proxy for "using this is
-# itself a perk". See _gated_gadget_tag.
-from services.shop_service import ARACHNID_GATED_ITEM_KEYS
+# Combat reaching into the store looks odd, but this map is exactly "which items does a
+# subscription gate, and at what tier", which is the store's business and shouldn't be
+# duplicated here — a second copy would silently stop tagging the next gated gadget
+# someone adds. Only gadget keys are ever looked up against it (camera_silver is in the
+# same map but never reaches resolve_gadget), so membership is a safe proxy for "using
+# this is itself a perk", and the mapped rank picks which tier's badge to show.
+# See _gated_gadget_tag.
+from services.shop_service import GATED_ITEM_MIN_RANK
 from utils.icons import emoji
 from utils.leveling import xp_for_level
 
@@ -478,8 +479,13 @@ def _gated_gadget_tag(gadget_key: str) -> str:
     """Spider Bots and Electric Webbing are ordinary gadgets once owned — no tier
     check runs at use time, and a lapsed subscriber keeps firing the ones they
     bought. Owning them at all is the perk, though, so the badge rides along on
-    every use: that button existing is what the subscription paid for."""
-    return _arachnid_tag() if gadget_key in ARACHNID_GATED_ITEM_KEYS else ""
+    every use: that button existing is what the subscription paid for. The badge
+    tracks the rank the gate actually required, so a Symbiote-gated gadget would
+    carry the Symbiote emoji rather than silently borrowing Arachnid's."""
+    min_rank = GATED_ITEM_MIN_RANK.get(gadget_key)
+    if min_rank is None:
+        return ""
+    return _symbiote_tag() if min_rank >= TIER_RANK_SYMBIOTE else _arachnid_tag()
 
 
 def _enemy_counter(state: BattleState, incoming_multiplier: float = 1.0) -> int:

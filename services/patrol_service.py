@@ -25,8 +25,8 @@ CAMERA_SILVER_ITEM_KEY = "camera_silver"
 # family whenever one is bought, so only one is ever actually equipped in practice.
 CAMERA_FAMILY_KEYS = [CAMERA_ITEM_KEY, CAMERA_SILVER_ITEM_KEY]
 
-# Camera tiers (Arachnid+ Patreon-exclusive past the base camera, gated in
-# shop_service.ARACHNID_GATED_ITEM_KEYS) — break_chance_reduction multiplies down
+# Camera tiers (Patreon-exclusive past the base camera, gated per-key in
+# shop_service.GATED_ITEM_MIN_RANK) — break_chance_reduction multiplies down
 # the existing break-chance formula in battle_service.finalize_battle;
 # quality_bump_chance is an independent roll to bump the banked photo's quality up
 # one tier (bronze->silver->gold, capped at gold). Silver's bump is exactly 0.60 —

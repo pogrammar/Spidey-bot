@@ -9,6 +9,7 @@ from db.base import async_session
 from db.models import InventoryItem, PatreonLink
 from services.patreon_service import (
     TIER_RANK_ARACHNID,
+    TIER_RANK_LABELS,
     TIER_RANK_NONE,
     TIER_RANK_SYMBIOTE,
     PatreonLinkError,
@@ -18,7 +19,7 @@ from services.patreon_service import (
     tier_rank_from_name,
     unlink_account,
 )
-from services.shop_service import ARACHNID_GATED_ITEM_KEYS
+from services.shop_service import GATED_ITEM_KEYS, GATED_ITEM_MIN_RANK
 from utils import webapp
 from utils.icons import emoji, item_label
 from utils.v2_embeds import StaticView
@@ -32,11 +33,8 @@ from utils.v2_embeds import StaticView
 # and dormant on purpose — don't remove it, don't wire a /patreon command to
 # it, it's for the other track whenever that gets rebuilt.
 
-TIER_RANK_LABELS = {
-    TIER_RANK_NONE: "None",
-    TIER_RANK_ARACHNID: "Arachnid",
-    TIER_RANK_SYMBIOTE: "Symbiote",
-}
+# TIER_RANK_LABELS is imported from patreon_service rather than defined here — /shop's
+# purchase refusals need to name a tier too, and a service can't import a cog for it.
 
 # Plain-English perk summaries, shared by /patreon perks AND the welcome DM. These
 # used to be duplicated as prose in the welcome strings, which is exactly how the
@@ -81,8 +79,11 @@ SYMBIOTE_DRAWBACKS = [
     "Sonic Dampener — the Shocker's frequency cuts through the bond. +30% incoming "
     "damage from him specifically.",
 ]
-# Arachnid+-gated items you have to actually buy (see shop_service.ARACHNID_GATED_ITEM_KEYS)
-# — being Arachnid+ only unlocks the ability to buy these, it doesn't grant them for free.
+# Display names for the gated purchasables. Which items are gated, and at which tier,
+# is shop_service.GATED_ITEM_MIN_RANK's business — this only supplies the wording, and
+# the checklist below iterates the rank map so a newly gated item shows up here on its
+# own rather than being silently left off the list. Buying is what the tier unlocks;
+# none of these are granted for free.
 GATED_ITEM_LABELS = {
     "spider_bots": "Spider Bots",
     "electric_webbing": "Electric Webbing",
@@ -163,15 +164,22 @@ def _perk_sections(tier_rank: int, owned_gated_items: set[str]) -> list[tuple[st
         (f"{tier_e} What It Costs You".strip(), [("", _bullets(drawbacks))]),
     ]
 
-    # Deliberately its own section with ownership state: being Arachnid+ unlocks the
-    # *right to buy* these, it doesn't hand them over. The old welcome copy claimed
-    # Spider Bots and Electric Webbing were "live right now", which sent new
-    # subscribers hunting for gear they didn't have.
+    # Deliberately its own section with ownership state: the tier unlocks the *right to
+    # buy* these, it doesn't hand them over. The old welcome copy claimed Spider Bots
+    # and Electric Webbing were "live right now", which sent new subscribers hunting
+    # for gear they didn't have.
+    #
+    # Driven off the rank map, filtered to what this tier can actually buy — an
+    # Arachnid subscriber shouldn't be shown a Symbiote-only item on a list headed
+    # "Yours to Buy", and a new gated item lands here without a second edit.
     gear = [
-        f"• {item_label(key, label)} — {'Owned' if key in owned_gated_items else 'Not owned yet — `/shop browse`'}"
-        for key, label in GATED_ITEM_LABELS.items()
+        f"• {item_label(key, GATED_ITEM_LABELS.get(key, key))} — "
+        f"{'Owned' if key in owned_gated_items else 'Not owned yet — `/shop browse`'}"
+        for key, min_rank in GATED_ITEM_MIN_RANK.items()
+        if tier_rank >= min_rank
     ]
-    sections.append((f"{tier_e} Yours to Buy".strip(), [("", "\n".join(gear))]))
+    if gear:
+        sections.append((f"{tier_e} Yours to Buy".strip(), [("", "\n".join(gear))]))
     return sections
 
 
@@ -194,11 +202,13 @@ def build_welcome_view(tier_rank: int, owned_gated_items: set[str]) -> StaticVie
 
 
 async def _owned_gated_items(session, discord_id: int) -> set[str]:
-    """Which of the Arachnid+-gated purchasables this user actually owns — the tier
-    unlocks buying them, so ownership is a separate question from tier."""
+    """Which of the Patreon-gated purchasables this user actually owns — the tier
+    unlocks buying them, so ownership is a separate question from tier. Queries every
+    gated key regardless of tier; the render filters down to what the caller's tier can
+    buy, so a lapsed subscriber's owned gear is still recognised as owned."""
     stmt = select(InventoryItem.item_key).where(
         InventoryItem.user_id == discord_id,
-        InventoryItem.item_key.in_(ARACHNID_GATED_ITEM_KEYS),
+        InventoryItem.item_key.in_(GATED_ITEM_KEYS),
     )
     return set((await session.execute(stmt)).scalars())
 
