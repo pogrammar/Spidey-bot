@@ -3,9 +3,10 @@ import logging
 import discord
 from aiohttp import web
 from discord.ext import commands
+from sqlalchemy import select
 
 from db.base import async_session
-from db.models import PatreonLink
+from db.models import InventoryItem, PatreonLink
 from services.patreon_service import (
     TIER_RANK_ARACHNID,
     TIER_RANK_NONE,
@@ -17,7 +18,10 @@ from services.patreon_service import (
     tier_rank_from_name,
     unlink_account,
 )
+from services.shop_service import ARACHNID_GATED_ITEM_KEYS
 from utils import webapp
+from utils.icons import emoji, item_label
+from utils.v2_embeds import StaticView
 
 # NOTE: Accelerated Growth (Reputation XP boost / Supportive Allies) is
 # deliberately NOT wired to Patreon tiers — that mechanic belongs to the
@@ -32,6 +36,28 @@ TIER_RANK_LABELS = {
     TIER_RANK_NONE: "None",
     TIER_RANK_ARACHNID: "Arachnid",
     TIER_RANK_SYMBIOTE: "Symbiote",
+}
+
+# Plain-English perk summaries for /patreon perks — kept separate from the welcome
+# DM copy above since this needs to read as a checklist, not prose.
+ARACHNID_PERK_LINES = [
+    "Organic Webbing — patrols never touch web-fluid vials or the no-fluid cash tax.",
+    "Enhanced Strength — +30% Attack damage on crime-tier patrols.",
+    "Combat-Ready Patrols — better odds of landing a crime encounter.",
+    "Drawback: ally happiness decays 30% faster.",
+]
+SYMBIOTE_PERK_LINES = [
+    "Venom Blast — the hit that would end a boss fight is absorbed and countered instead (once per fight).",
+    "Biomorphic Webbing — extra chance at bonus cash, a bonus component, and a bonus photo.",
+    "Stealth Mode — full /shakedown immunity while you've been inactive 20+ minutes.",
+    "Drawback: Sonic Dampener — +30% incoming damage against the Shocker.",
+]
+# Arachnid+-gated items you have to actually buy (see shop_service.ARACHNID_GATED_ITEM_KEYS)
+# — being Arachnid+ only unlocks the ability to buy these, it doesn't grant them for free.
+GATED_ITEM_LABELS = {
+    "spider_bots": "Spider Bots",
+    "electric_webbing": "Electric Webbing",
+    "camera_silver": "Silver-Grade Camera",
 }
 
 log = logging.getLogger("spidey")
@@ -126,6 +152,44 @@ class PatreonCog(commands.Cog):
             f"**Perk tier:** {TIER_RANK_LABELS[tier_rank]}",
         ]
         await ctx.respond("\n".join(lines), ephemeral=True)
+
+    @patreon.command(name="perks", description="See exactly which perks are active for you right now.")
+    async def perks(self, ctx: discord.ApplicationContext):
+        async with async_session() as session:
+            tier_rank = await get_tier_rank(session, ctx.author.id)
+            stmt = select(InventoryItem.item_key).where(
+                InventoryItem.user_id == ctx.author.id,
+                InventoryItem.item_key.in_(ARACHNID_GATED_ITEM_KEYS),
+            )
+            owned_gated_items = set((await session.execute(stmt)).scalars())
+
+        e = emoji("arachnid") or ""
+        field_groups = []
+
+        if tier_rank == TIER_RANK_NONE:
+            field_groups.append((
+                None,
+                [("No active perks", "Subscribe at Arachnid or Symbiote and run /patreon link to connect.")],
+            ))
+        else:
+            field_groups.append((
+                f"{e} Arachnid".strip(),
+                [("", "\n".join(f"• {line}" for line in ARACHNID_PERK_LINES))],
+            ))
+            if tier_rank >= TIER_RANK_SYMBIOTE:
+                field_groups.append((
+                    f"{e} Symbiote".strip(),
+                    [("", "\n".join(f"• {line}" for line in SYMBIOTE_PERK_LINES))],
+                ))
+
+            gadget_lines = [
+                f"• {item_label(key, label)} — {'Owned' if key in owned_gated_items else 'Not owned (see /shop browse)'}"
+                for key, label in GATED_ITEM_LABELS.items()
+            ]
+            field_groups.append((f"{e} Arachnid+ Exclusive Gear".strip(), [("", "\n".join(gadget_lines))]))
+
+        view = StaticView("Your Active Perks", field_groups=field_groups)
+        await ctx.respond(view=view, files=view.files, ephemeral=True)
 
     async def _callback(self, request: web.Request) -> web.Response:
         code = request.query.get("code")
