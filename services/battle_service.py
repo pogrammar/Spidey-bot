@@ -17,10 +17,19 @@ from services.patrol_service import (
     BIOMORPHIC_WEBBING_CASH_RANGE,
     CRIME_LEVEL_DECAY_RANGE_LOSS,
     CRIME_LEVEL_DECAY_RANGE_WIN,
+    bump_photo_quality,
+    camera_tier_stats,
     get_equipped_camera,
     roll_donation,
     roll_hazard,
 )
+# Combat reaching into the store looks odd, but this set is exactly "which items does
+# a subscription gate", which is the store's business and shouldn't be duplicated
+# here — a second copy would silently stop tagging the next gated gadget someone adds.
+# Only gadget keys are ever looked up against it (camera_silver lives in the same set
+# but never reaches resolve_gadget), so membership is a safe proxy for "using this is
+# itself a perk". See _gated_gadget_tag.
+from services.shop_service import ARACHNID_GATED_ITEM_KEYS
 from utils.icons import emoji
 from utils.leveling import xp_for_level
 
@@ -382,6 +391,17 @@ class BattleReport:
     crime_level_delta: int = 0
     boss_cash_reward: int = 0
     boss_new_level: int | None = None
+    # Perk attribution (GAME_DESIGN.md §9). None of these change what the player
+    # earned — they exist so the result card can name the perk that fired instead of
+    # the player just seeing a quietly better number and having no way to tell the
+    # subscription did anything. photo_quality_before_bump is only set when the bump
+    # actually changed the tier (a gold photo can't go higher), so the pair is always
+    # safe to render together.
+    photo_quality_bumped: bool = False
+    photo_quality_before_bump: str | None = None
+    biomorphic_photo: bool = False
+    biomorphic_component: bool = False
+    biomorphic_cash: int = 0
 
 
 def start_battle(
@@ -429,45 +449,25 @@ def start_battle(
     )
 
 
-# Arachnid+ Patreon perks — proc chances sit in the same range as existing gadget
-# base_chance values (0.25-0.55 in gadget_service.py's GADGET_EFFECTS), pulled
-# toward the low end since these are always-on and cost no loadout slot, unlike a
-# gadget you had to choose to equip.
-ELECTRIC_WEBBING_PROC_CHANCE = 0.20
-ELECTRIC_WEBBING_BONUS_DAMAGE_RANGE = [8, 15]
-# Every perk line below ends with the Arachnid tag — same rule the user set for
-# every Arachnid perk: whenever one actually fires, the emoji + "Arachnid" has to
-# be visibly attached to it, not just a flavor line that happens to imply it.
-ELECTRIC_WEBBING_LINES = [
-    " Your webbing crackles and locks them up — no counter.",
-    " A jolt of electric webbing fries their footing — no counter.",
-    " The web-shock catches them cold — no counter.",
-]
-
-SPIDER_BOTS_PROC_CHANCE = 0.20
-SPIDER_BOTS_BONUS_DAMAGE_RANGE = [5, 12]
-SPIDER_BOTS_LINES = [
-    " A spider-bot darts in for {dmg} extra damage.",
-    " One of your drones gets a free hit in for {dmg}.",
-    " A spider-bot swarms past you for {dmg} bonus damage.",
-]
-
-
 def _arachnid_tag() -> str:
-    return f" ({emoji('arachnid') or ''} Arachnid)".replace("  ", " ")
+    e = emoji("arachnid")
+    return f" {e}" if e else ""
 
 
-def roll_spider_bots(state: BattleState, tier_rank: int) -> str:
-    """Passive, always-on — no action cost, doesn't interact with the counter at
-    all, just adds bonus damage if the enemy's still standing. Safe to call after
-    any round-ending action (Attack/Evade/Gadget)."""
-    if tier_rank < TIER_RANK_ARACHNID or state.enemy_hp <= 0:
-        return ""
-    if random.random() >= SPIDER_BOTS_PROC_CHANCE:
-        return ""
-    dmg = rand_range(SPIDER_BOTS_BONUS_DAMAGE_RANGE)
-    state.enemy_hp = max(0, state.enemy_hp - dmg)
-    return random.choice(SPIDER_BOTS_LINES).format(dmg=dmg) + _arachnid_tag()
+def _symbiote_tag() -> str:
+    """Symbiote-tier counterpart to _arachnid_tag. Both exist because the attribution
+    rule in GAME_DESIGN.md §9 is emoji-only — the tier's *name* never appears in
+    battle copy, so the badge is the entire signal that a paid perk just fired."""
+    e = emoji("symbiote")
+    return f" {e}" if e else ""
+
+
+def _gated_gadget_tag(gadget_key: str) -> str:
+    """Spider Bots and Electric Webbing are ordinary gadgets once owned — no tier
+    check runs at use time, and a lapsed subscriber keeps firing the ones they
+    bought. Owning them at all is the perk, though, so the badge rides along on
+    every use: that button existing is what the subscription paid for."""
+    return _arachnid_tag() if gadget_key in ARACHNID_GATED_ITEM_KEYS else ""
 
 
 def _enemy_counter(state: BattleState, incoming_multiplier: float = 1.0) -> int:
@@ -489,8 +489,37 @@ VENOM_BLAST_LINES = [
     " The bond absorbs everything — and pays it back double.",
 ]
 
+# Sonic Dampener (Symbiote drawback, this one boss only). The extra damage used to be
+# applied with no line printed at all, which reads as the boss being tuned unfairly
+# rather than as the tier's own stated cost. The tag is doing real work here: it's the
+# only thing telling the player where the spike came from.
+SONIC_DAMPENER_LINES = [
+    " The sonic emitters bite into the bond — that one tears deeper than it should have.",
+    " Sound cuts straight through the symbiote's guard and the blow lands uglier than it should.",
+    " The dampeners scream, the bond flinches, and you feel that hit properly.",
+]
 
-def _apply_counter_with_venom_blast(state: BattleState, dmg: int, tier_rank: int) -> str:
+
+@dataclass
+class CounterOutcome:
+    """What the enemy's counter actually turned into, once the Symbiote tier has had
+    its say. Split into three pieces because they compose differently:
+
+    - `damage` is the amount that really hit the suit, *after* Sonic Dampener. Callers
+      must format their damage readout from this, not from the pre-perk roll they
+      passed in — printing the raw roll understated a dampened hit.
+    - `venom_line` *replaces* the normal counter copy when set: the hit was negated
+      outright, so there's no damage left to report, only the blast.
+    - `dampener_note` is additive — the hit did land, harder than usual, and this
+      explains why on top of the ordinary damage readout.
+    """
+
+    damage: int = 0
+    venom_line: str = ""
+    dampener_note: str = ""
+
+
+def _apply_counter_with_venom_blast(state: BattleState, dmg: int, tier_rank: int) -> CounterOutcome:
     """Boss fights only, once per fight. Copy already promises "twice as hard" —
     implementing that literally (2x a normal attack roll) rather than a flat
     number keeps it self-scaling with difficulty instead of needing its own
@@ -499,8 +528,10 @@ def _apply_counter_with_venom_blast(state: BattleState, dmg: int, tier_rank: int
     Also applies Sonic Dampener (Symbiote drawback) before the Venom Blast check,
     so a dampened hit correctly factors into whether Venom Blast would even
     trigger — a real cost, not just cosmetic extra damage after the fact."""
+    dampener_note = ""
     if tier_rank >= TIER_RANK_SYMBIOTE and dmg > 0 and state.enemy_name == SONIC_DAMPENER_BOSS_NAME:
         dmg = round(dmg * (1 + SONIC_DAMPENER_DAMAGE_INCREASE))
+        dampener_note = random.choice(SONIC_DAMPENER_LINES) + _symbiote_tag()
 
     would_deplete = (
         state.outcome_key == "boss"
@@ -511,10 +542,15 @@ def _apply_counter_with_venom_blast(state: BattleState, dmg: int, tier_rank: int
         state.venom_blast_used = True
         bonus = rand_range(state.attack_damage_range) * 2
         state.enemy_hp = max(0, state.enemy_hp - bonus)
-        return random.choice(VENOM_BLAST_LINES)
+        # The dampener note is deliberately dropped on this path: Venom Blast negates
+        # the hit entirely, so there's no extra damage left to explain, and printing
+        # "that hit landed harder" next to "the blow never lands" would contradict
+        # itself. The dampener still counted — it's what pushed the hit lethal enough
+        # to trigger the blast in the first place.
+        return CounterOutcome(damage=0, venom_line=random.choice(VENOM_BLAST_LINES) + _symbiote_tag())
 
     _apply_counter(state, dmg)
-    return ""
+    return CounterOutcome(damage=dmg, dampener_note=dampener_note)
 
 
 def resolve_attack(state: BattleState, tier_rank: int = TIER_RANK_NONE) -> str:
@@ -544,35 +580,28 @@ def resolve_attack(state: BattleState, tier_rank: int = TIER_RANK_NONE) -> str:
     if state.enemy_hp <= 0:
         return hit_line
 
-    # Electric Webbing (Arachnid+ perk) — only eligible on a landed hit (it needs
-    # contact to shock the target), stuns the enemy so the counter's skipped
-    # entirely for the round, same "clean kill skips the counter roll" shape as a
-    # finishing blow already gets.
-    if landed and tier_rank >= TIER_RANK_ARACHNID and random.random() < ELECTRIC_WEBBING_PROC_CHANCE:
-        bonus = rand_range(ELECTRIC_WEBBING_BONUS_DAMAGE_RANGE)
-        state.enemy_hp = max(0, state.enemy_hp - bonus)
-        hit_line += random.choice(ELECTRIC_WEBBING_LINES) + _arachnid_tag()
-        return hit_line
-
     counter = _enemy_counter(state)
-    venom_line = _apply_counter_with_venom_blast(state, counter, tier_rank)
-    if venom_line:
-        return hit_line + venom_line
+    outcome = _apply_counter_with_venom_blast(state, counter, tier_rank)
+    if outcome.venom_line:
+        return hit_line + outcome.venom_line
     enemy = state.enemy_name.capitalize()
-    if counter:
-        counter_line = random.choice(ENEMY_HIT_LINES).format(enemy=enemy, dmg=counter)
+    if outcome.damage:
+        counter_line = random.choice(ENEMY_HIT_LINES).format(enemy=enemy, dmg=outcome.damage)
     else:
         counter_line = random.choice(ENEMY_WHIFF_LINES).format(enemy=enemy)
-    return hit_line + counter_line
+    return hit_line + counter_line + outcome.dampener_note
 
 
 def resolve_evade(state: BattleState, tier_rank: int = TIER_RANK_NONE) -> str:
     state.combo_ready = True
     counter = _enemy_counter(state, EVADE_DAMAGE_MULTIPLIER)
-    venom_line = _apply_counter_with_venom_blast(state, counter, tier_rank)
-    if venom_line:
-        return venom_line
-    base = random.choice(EVADE_GRAZE_LINES).format(dmg=counter) if counter else random.choice(EVADE_CLEAN_LINES)
+    outcome = _apply_counter_with_venom_blast(state, counter, tier_rank)
+    if outcome.venom_line:
+        return outcome.venom_line
+    if outcome.damage:
+        base = random.choice(EVADE_GRAZE_LINES).format(dmg=outcome.damage) + outcome.dampener_note
+    else:
+        base = random.choice(EVADE_CLEAN_LINES)
     return f"{base} {random.choice(COMBO_SETUP_LINES)}"
 
 
@@ -601,22 +630,23 @@ async def resolve_gadget(
 
         if state.enemy_hp > 0:
             counter = _enemy_counter(state)
-            venom_line = _apply_counter_with_venom_blast(state, counter, tier_rank)
-            if venom_line:
-                line += venom_line
+            outcome = _apply_counter_with_venom_blast(state, counter, tier_rank)
+            if outcome.venom_line:
+                line += outcome.venom_line
             else:
                 enemy = state.enemy_name.capitalize()
-                if counter:
-                    line += random.choice(ENEMY_HIT_LINES).format(enemy=enemy, dmg=counter)
+                if outcome.damage:
+                    line += random.choice(ENEMY_HIT_LINES).format(enemy=enemy, dmg=outcome.damage)
                 else:
                     line += random.choice(ENEMY_WHIFF_LINES).format(enemy=enemy)
+                line += outcome.dampener_note
 
         if broken:
             line += f" Worse, your {broken} gives out."
         return line
 
     dmg_range = state.attack_damage_range
-    lines = [f"{effect.gadget_name}!"]
+    lines = [f"{effect.gadget_name}!{_gated_gadget_tag(gadget_key)}"]
 
     if effect.kind == "negate_damage":
         lines.append("You block the hit entirely — no damage taken.")
@@ -624,9 +654,17 @@ async def resolve_gadget(
         dmg = round(rand_range(dmg_range) * 1.1)
         state.enemy_hp = max(0, state.enemy_hp - dmg)
         lines.append(f"{dmg} damage dealt, and the counter's fully blocked.")
+    elif effect.kind == "shock_burst":
+        # Electric Webbing — bonus damage AND the shock keeps the enemy from
+        # countering this round at all, same "no counter" shape as group_defense.
+        dmg = rand_range(dmg_range) + rand_range(effect.bonus_range or [8, 15])
+        state.enemy_hp = max(0, state.enemy_hp - dmg)
+        lines.append(f"{dmg} damage dealt — the shock keeps them from countering.")
     else:
         if effect.kind == "bonus_xp":
             dmg = round(rand_range(dmg_range) * 1.4)
+        elif effect.kind == "bonus_damage":
+            dmg = rand_range(dmg_range) + rand_range(effect.bonus_range or [5, 12])
         else:
             dmg = rand_range(dmg_range)
         state.enemy_hp = max(0, state.enemy_hp - dmg)
@@ -643,14 +681,23 @@ async def resolve_gadget(
             bonus_xp = max(1, round(state.base_xp * (effect.magnitude or 0.5)))
             state.bonus_xp += bonus_xp
             lines.append("That combo's worth extra reputation.")
+        elif effect.kind == "bonus_damage":
+            # This flavor is spider-bot-specific and spider_bots is the only
+            # bonus_damage gadget today — keyed rather than unconditional so a
+            # second one added later falls back to the plain damage line above
+            # instead of silently claiming spider bots did it.
+            if gadget_key == "spider_bots":
+                lines.append("A spider-bot piled on for the extra damage.")
 
         if state.enemy_hp > 0:
             counter = _enemy_counter(state)
-            venom_line = _apply_counter_with_venom_blast(state, counter, tier_rank)
-            if venom_line:
-                lines.append(venom_line)
-            elif counter:
-                lines.append(f"{state.enemy_name.capitalize()} hits back, -{counter}% suit.")
+            outcome = _apply_counter_with_venom_blast(state, counter, tier_rank)
+            if outcome.venom_line:
+                lines.append(outcome.venom_line)
+            elif outcome.damage:
+                lines.append(
+                    f"{state.enemy_name.capitalize()} hits back, -{outcome.damage}% suit.{outcome.dampener_note}"
+                )
 
     if broken:
         lines.append(f"Your {broken} gives out from the strain.")
@@ -679,21 +726,46 @@ async def finalize_battle(
 
     photo_banked = False
     camera_broke = False
+    banked_photo_quality = None
+    photo_quality_bumped = False
+    photo_quality_before_bump = None
+    biomorphic_photo = False
     camera = await get_equipped_camera(session, user.discord_id)
     if camera is not None:
-        session.add(PendingPhoto(user_id=user.discord_id, quality=stats["photo_quality"]))
+        tier_stats = camera_tier_stats(camera.item_key)
+        banked_photo_quality = stats["photo_quality"]
+        if random.random() < tier_stats["quality_bump_chance"]:
+            bumped = bump_photo_quality(banked_photo_quality)
+            # bump_photo_quality caps at gold, so on a gold-tier encounter the roll can
+            # fire and change nothing. Only flag a real tier change — calling that an
+            # upgrade on the card would be promising something the player didn't get.
+            if bumped != banked_photo_quality:
+                photo_quality_before_bump = banked_photo_quality
+                banked_photo_quality = bumped
+                photo_quality_bumped = True
+        session.add(PendingPhoto(user_id=user.discord_id, quality=banked_photo_quality))
         photo_banked = True
         break_chance = 0.06 + 0.05 * state.hits_taken
         if state.entered_unprotected:
             break_chance += UNPROTECTED_CAMERA_BREAK_BONUS
         break_chance = min(0.9, break_chance * state.difficulty)
+        break_chance *= 1 - tier_stats["break_chance_reduction"]
         if random.random() < break_chance:
             camera_broke = True
             await session.delete(camera)
         if tier_rank >= TIER_RANK_SYMBIOTE and random.random() < BIOMORPHIC_WEBBING_PHOTO_CHANCE:
-            session.add(PendingPhoto(user_id=user.discord_id, quality=stats["photo_quality"]))
+            # Same camera took this one, so it gets its own quality-bump roll rather
+            # than the raw encounter quality — the lens doesn't stop working for the
+            # second shot. Rolled independently instead of copying the first photo's
+            # result, so the two can legitimately bank at different qualities.
+            bonus_quality = stats["photo_quality"]
+            if random.random() < tier_stats["quality_bump_chance"]:
+                bonus_quality = bump_photo_quality(bonus_quality)
+            session.add(PendingPhoto(user_id=user.discord_id, quality=bonus_quality))
+            biomorphic_photo = True
 
     item_found = None
+    biomorphic_component = False
     drop_chance = min(0.9, stats["base_drop_chance"] + state.scavenge_bonus)
     if user.suit_integrity < SCAVENGE_URGENCY_THRESHOLD:
         urgency = (SCAVENGE_URGENCY_THRESHOLD - user.suit_integrity) / SCAVENGE_URGENCY_THRESHOLD
@@ -706,9 +778,12 @@ async def finalize_battle(
         # roll above missed, so this never stacks into a guaranteed double-drop.
         await add_item(session, user.discord_id, stats["component_key"], 1)
         item_found = stats["component_key"]
+        biomorphic_component = True
 
+    biomorphic_cash = 0
     if tier_rank >= TIER_RANK_SYMBIOTE and random.random() < BIOMORPHIC_WEBBING_CASH_CHANCE:
-        cash += rand_range(BIOMORPHIC_WEBBING_CASH_RANGE)
+        biomorphic_cash = rand_range(BIOMORPHIC_WEBBING_CASH_RANGE)
+        cash += biomorphic_cash
 
     if cash:
         await add_wallet(session, user, cash, reason=f"patrol_battle:{state.outcome_key}")
@@ -761,7 +836,7 @@ async def finalize_battle(
         cash_gained=cash,
         suit_damage=state.total_suit_damage,
         photo_banked=photo_banked,
-        photo_quality=stats["photo_quality"] if photo_banked else None,
+        photo_quality=banked_photo_quality,
         camera_broke=camera_broke,
         item_found=item_found,
         gadgets_broken=state.gadgets_broken,
@@ -774,4 +849,9 @@ async def finalize_battle(
         crime_level_delta=crime_level_delta,
         boss_cash_reward=boss_cash_reward,
         boss_new_level=boss_new_level,
+        photo_quality_bumped=photo_quality_bumped,
+        photo_quality_before_bump=photo_quality_before_bump,
+        biomorphic_photo=biomorphic_photo,
+        biomorphic_component=biomorphic_component,
+        biomorphic_cash=biomorphic_cash,
     )

@@ -11,7 +11,6 @@ from services.battle_service import (
     resolve_attack,
     resolve_evade,
     resolve_gadget,
-    roll_spider_bots,
     start_battle,
 )
 from services.busy import get_busy
@@ -85,6 +84,17 @@ def _crime_line(crime_level: int, crime_level_delta: int) -> str:
     return f"\n-# City crime: {crime_level}/100 ({crime_level_delta:+d})"
 
 
+def _biomorphic_cash_line(amount: int) -> str:
+    """Subtext naming Biomorphic Webbing's share of a Cash value (Symbiote+ perk).
+    Same shape as _crime_line — an ambient readout under the number rather than its
+    own field, since it isn't separate income, just part of that number the player
+    would otherwise have no way to attribute. The badge alone carries the tier; the
+    tier's name is never spelled out (GAME_DESIGN.md §9)."""
+    badge = emoji("symbiote")
+    prefix = f"{badge} " if badge else ""
+    return f"\n-# {prefix}The webbing shook an extra ${amount:,} loose."
+
+
 def _cap(name: str) -> str:
     """Capitalizes just the first letter — str.capitalize() also lowercases the rest,
     which mangles names with their own internal capitals (e.g. "a Sable mercenary")."""
@@ -101,7 +111,7 @@ class AttackButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):
         state = self.battle_view.state
         tier_rank = self.battle_view.tier_rank
-        line = resolve_attack(state, tier_rank) + roll_spider_bots(state, tier_rank)
+        line = resolve_attack(state, tier_rank)
         await self.battle_view._advance(interaction, line)
 
 
@@ -115,7 +125,7 @@ class EvadeButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):
         state = self.battle_view.state
         tier_rank = self.battle_view.tier_rank
-        line = resolve_evade(state, tier_rank) + roll_spider_bots(state, tier_rank)
+        line = resolve_evade(state, tier_rank)
         await self.battle_view._advance(interaction, line)
 
 
@@ -138,7 +148,6 @@ class GadgetActionButton(discord.ui.Button):
         tier_rank = self.battle_view.tier_rank
         async with async_session() as session:
             line = await resolve_gadget(session, self.battle_view.author_id, state, self.gadget_key, tier_rank)
-        line += roll_spider_bots(state, tier_rank)
         await self.battle_view._advance(interaction, line)
 
 
@@ -163,7 +172,6 @@ class GadgetSelect(discord.ui.Select):
         tier_rank = self.battle_view.tier_rank
         async with async_session() as session:
             line = await resolve_gadget(session, self.battle_view.author_id, state, gadget_key, tier_rank)
-        line += roll_spider_bots(state, tier_rank)
         await self.battle_view._advance(interaction, line)
 
 
@@ -295,7 +303,10 @@ class PatrolBattleView(discord.ui.DesignerView):
         crime_line = _crime_line(report.crime_level, report.crime_level_delta)
         outcome_fields = [(f"{emoji('reputation') or ''} Reputation XP".strip(), f"+{report.xp_gained}{crime_line}")]
         if report.cash_gained:
-            outcome_fields.append(("Cash", f"+${report.cash_gained:,}"))
+            cash_value = f"+${report.cash_gained:,}"
+            if report.biomorphic_cash:
+                cash_value += _biomorphic_cash_line(report.biomorphic_cash)
+            outcome_fields.append(("Cash", cash_value))
         outcome_fields.append((f"{emoji('suit_damage') or ''} Suit Damage".strip(), f"-{report.suit_damage}%"))
         field_groups = [("Outcome", outcome_fields)]
 
@@ -303,8 +314,33 @@ class PatrolBattleView(discord.ui.DesignerView):
             camera_label = item_label("camera", "Camera")
             caught = f"{camera_label} broke mid-shot!" if report.camera_broke else "Photo saved for the Bugle."
             camera_emoji = emoji("camera")
-            heading = f"{camera_emoji} {report.photo_quality.title()} Photo Op" if camera_emoji else f"{report.photo_quality.title()} Photo Op"
-            field_groups.append((heading, [("", caught)]))
+            quality = report.photo_quality.title()
+            heading = f"{camera_emoji} {quality} Photo Op" if camera_emoji else f"{quality} Photo Op"
+            # One row (just `caught`) keeps the old bold-heading layout untouched; the
+            # perk rows below turn the group into a headed list, which is the point —
+            # a premium perk firing should visibly restructure the card, not hide in it.
+            photo_rows = []
+            if report.photo_quality_bumped:
+                # The Silver camera's headline perk. It rolls invisibly and, before
+                # this, changed nothing the player could see — the photo was just
+                # quietly worth more at /bugle sell time. Now it gets a labelled row
+                # with the before -> after tiers spelled out and the tier badge per
+                # GAME_DESIGN.md §9. before_bump is only ever set on a real tier
+                # change, so this can't print "Gold -> Gold".
+                arachnid = emoji("arachnid") or ""
+                photo_rows.append((
+                    f"{arachnid} Photo Upgraded".strip(),
+                    f"{report.photo_quality_before_bump.title()} → **{quality}** — the silver lens "
+                    f"caught detail the stock camera would have thrown away.",
+                ))
+            photo_rows.append(("", caught))
+            if report.biomorphic_photo:
+                symbiote = emoji("symbiote") or ""
+                photo_rows.append((
+                    f"{symbiote} Second Shot".strip(),
+                    "The webbing kept shooting after you'd stopped — a second photo banked too.",
+                ))
+            field_groups.append((heading, photo_rows))
 
         if report.unprotected_penalty:
             value = (
@@ -315,6 +351,13 @@ class PatrolBattleView(discord.ui.DesignerView):
 
         if report.item_found:
             found_label = item_label(report.item_found, report.item_found.replace("_", " ").title())
+            if report.biomorphic_component:
+                # Byte-identical to an ordinary drop before this — the whole perk was
+                # a component appearing that otherwise wouldn't have, with nothing
+                # saying so. Only fires when the base scavenge roll missed.
+                badge = emoji("symbiote")
+                prefix = f"{badge} " if badge else ""
+                found_label += f"\n-# {prefix}You'd have walked right past it — the webbing caught it."
             field_groups.append(("Scavenged", [("", found_label)]))
 
         if report.gadgets_broken:
@@ -425,7 +468,7 @@ def _noncombat_view(result: PatrolResult, suit_warning: str | None) -> StaticVie
     fields = []
     if result.organic_webbing_active:
         arachnid = emoji("arachnid") or ""
-        fields.append((fluid_field_name, f"{arachnid} Organic Webbing (Arachnid) — no vial needed".strip()))
+        fields.append((fluid_field_name, f"{arachnid} Organic Webbing — no vial needed".strip()))
     elif result.web_fluid_used:
         fields.append((fluid_field_name, "-1 vial"))
     else:
@@ -440,7 +483,10 @@ def _noncombat_view(result: PatrolResult, suit_warning: str | None) -> StaticVie
     fields.append((f"{emoji('reputation') or ''} Reputation XP".strip(), f"+{result.xp_gained}{xp_note}{crime_line}"))
 
     if result.cash_gained:
-        fields.append(("Cash", f"+${result.cash_gained:,}"))
+        cash_value = f"+${result.cash_gained:,}"
+        if result.biomorphic_cash:
+            cash_value += _biomorphic_cash_line(result.biomorphic_cash)
+        fields.append(("Cash", cash_value))
 
     field_groups = [(None, fields)]
     if result.hazard_flavor:
