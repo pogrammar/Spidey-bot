@@ -38,19 +38,31 @@ TIER_RANK_LABELS = {
     TIER_RANK_SYMBIOTE: "Symbiote",
 }
 
-# Plain-English perk summaries for /patreon perks — kept separate from the welcome
-# DM copy above since this needs to read as a checklist, not prose.
-ARACHNID_PERK_LINES = [
+# Plain-English perk summaries, shared by /patreon perks AND the welcome DM. These
+# used to be duplicated as prose in the welcome strings, which is exactly how the
+# ally-decay drawback went stale (it read "30% faster" for a while after the number
+# became 50%). One list, both surfaces — if a perk changes, it changes here once.
+#
+# Perks and drawbacks are separate lists rather than one list with "Drawback:"
+# prefixes so each surface can frame them itself: the welcome gives the cost its own
+# section instead of burying it as the last bullet of the good news.
+ARACHNID_PERKS = [
     "Organic Webbing — patrols never touch web-fluid vials or the no-fluid cash tax.",
     "Enhanced Strength — +30% Attack damage on crime-tier patrols.",
     "Combat-Ready Patrols — better odds of landing a crime encounter.",
-    "Drawback: ally happiness decays 30% faster.",
 ]
-SYMBIOTE_PERK_LINES = [
+ARACHNID_DRAWBACKS = [
+    "Your allies need you more — happiness decays 50% faster, so a full meter runs "
+    "dry in 16 hours instead of 24.",
+]
+SYMBIOTE_PERKS = [
     "Venom Blast — the hit that would end a boss fight is absorbed and countered instead (once per fight).",
     "Biomorphic Webbing — extra chance at bonus cash, a bonus component, and a bonus photo.",
     "Stealth Mode — full /shakedown immunity while you've been inactive 20+ minutes.",
-    "Drawback: Sonic Dampener — +30% incoming damage against the Shocker.",
+]
+SYMBIOTE_DRAWBACKS = [
+    "Sonic Dampener — the Shocker's frequency cuts through the bond. +30% incoming "
+    "damage from him specifically.",
 ]
 # Arachnid+-gated items you have to actually buy (see shop_service.ARACHNID_GATED_ITEM_KEYS)
 # — being Arachnid+ only unlocks the ability to buy these, it doesn't grant them for free.
@@ -68,28 +80,104 @@ CALLBACK_SUCCESS_HTML = """<!doctype html><html><body style="font-family:sans-se
 CALLBACK_ERROR_HTML = """<!doctype html><html><body style="font-family:sans-serif;text-align:center;padding:4rem;">
 <h2>Something went wrong</h2><p>{message}</p></body></html>"""
 
-# Sent as the post-link DM — same "Bond with the [Tier]" voice as the tier
-# descriptions, but doing a real job: telling a brand-new subscriber what
-# actually changed and what to do next, not just confirming a connection.
-ARACHNID_WELCOME = (
-    "🕷️ **Bond with the Arachnid Spider — and it's already working.**\n\n"
-    "Organic Webbing, Enhanced Strength, Electric Webbing, Spider Bots, and more combat-favoring "
-    "patrols are all live for you right now — nothing to set up.\n\n"
-    "One real thing to know: the bond means your allies keep a closer eye on you now — happiness "
-    "decays a bit faster, so you'll want to visit a little more often than before.\n\n"
-    "Run `/patreon status` whenever you want to double-check what's active."
+# The post-link DM. Written in the past tense on purpose — by the time this arrives
+# the bond has already happened, so it reports rather than pitches. It's the only
+# place a subscriber is *told* what they bought without having to go looking, so it
+# carries the full picture: what's on, what it costs, what still has to be bought,
+# and every command for checking later.
+ARACHNID_INTRO = (
+    "You've **bonded with the Arachnid Spider**. The bite's taken — everything below "
+    "is already running on your patrols, with nothing to switch on."
 )
-SYMBIOTE_WELCOME = (
-    "🕷️ **Bond with the Symbiote Spider — you're all the way in.**\n\n"
-    "Everything Arachnid gets, plus Venom Blast, Stealth Mode, and Biomorphic Webbing — all live for "
-    "you right now. One thing worth knowing: the bond's watchful, but not invincible. It doesn't like "
-    "the Shocker much.\n\n"
-    "Run `/patreon status` whenever you want to double-check what's active."
+SYMBIOTE_INTRO = (
+    "You've **bonded with the Symbiote Spider**. The bond runs deeper than the "
+    "Arachnid's — you keep every bit of that, and the suit answers back now."
 )
-NO_PLEDGE_WELCOME = (
-    "✅ Patreon connected. You don't have an active pledge right now, so no perks are active yet — "
-    "they'll kick in automatically the moment that changes, no need to re-link."
+NO_PLEDGE_INTRO = (
+    "Your Patreon account is connected. There's no active pledge on it right now, so "
+    "nothing below is live yet — but the moment one starts, your perks switch "
+    "themselves on. You won't need to link again."
 )
+
+# Listed in full even for a brand-new subscriber who hasn't used any of them yet —
+# this DM is the one message they're guaranteed to see, so it doubles as the reference.
+COMMAND_LINES = [
+    "`/patreon perks` — everything that's live for you, and what gear you still don't own.",
+    "`/patreon status` — the raw tier the bot currently reads off Patreon.",
+    "`/patreon link` — re-run any time to re-check your tier or switch Patreon accounts.",
+    "`/patreon unlink` — disconnect. Perks stop immediately.",
+    "`/shop browse` — where your exclusive gear lives.",
+]
+
+
+def _bullets(lines: list[str]) -> str:
+    return "\n".join(f"• {line}" for line in lines)
+
+
+def _perk_sections(tier_rank: int, owned_gated_items: set[str]) -> list[tuple[str | None, list[tuple[str, str]]]]:
+    """The perk breakdown shared by /patreon perks and the welcome DM, so the two can
+    never drift. Symbiote is a strict superset of Arachnid, so its sections stack on
+    top rather than replacing — including the drawbacks, which a Symbiote subscriber
+    inherits and therefore has to be told about too."""
+    if tier_rank == TIER_RANK_NONE:
+        return [(
+            None,
+            [("No active perks", "Subscribe at Arachnid or Symbiote and run /patreon link to connect.")],
+        )]
+
+    perks = list(ARACHNID_PERKS)
+    drawbacks = list(ARACHNID_DRAWBACKS)
+    if tier_rank >= TIER_RANK_SYMBIOTE:
+        perks += SYMBIOTE_PERKS
+        drawbacks += SYMBIOTE_DRAWBACKS
+
+    # Emoji-only attribution, per the house rule — the tier's emoji carries the
+    # attribution, never the tier name as text. Symbiote gets its own emoji rather
+    # than reusing Arachnid's.
+    tier_e = emoji("symbiote" if tier_rank >= TIER_RANK_SYMBIOTE else "arachnid") or ""
+    sections: list[tuple[str | None, list[tuple[str, str]]]] = [
+        (f"{tier_e} Always On".strip(), [("", _bullets(perks))]),
+        (f"{tier_e} What It Costs You".strip(), [("", _bullets(drawbacks))]),
+    ]
+
+    # Deliberately its own section with ownership state: being Arachnid+ unlocks the
+    # *right to buy* these, it doesn't hand them over. The old welcome copy claimed
+    # Spider Bots and Electric Webbing were "live right now", which sent new
+    # subscribers hunting for gear they didn't have.
+    gear = [
+        f"• {item_label(key, label)} — {'Owned' if key in owned_gated_items else 'Not owned yet — `/shop browse`'}"
+        for key, label in GATED_ITEM_LABELS.items()
+    ]
+    sections.append((f"{tier_e} Yours to Buy".strip(), [("", "\n".join(gear))]))
+    return sections
+
+
+def build_welcome_view(tier_rank: int, owned_gated_items: set[str]) -> StaticView:
+    """The welcome DM as a Components V2 view. Note a V2 message can't also carry
+    `content` or an `embed`, so this has to be entirely self-contained — and its
+    `files` must be passed along as `files=view.files` or the thumbnail won't
+    resolve."""
+    if tier_rank >= TIER_RANK_SYMBIOTE:
+        title, intro, icon_key = "Bonded — Symbiote Spider", SYMBIOTE_INTRO, "symbiote"
+    elif tier_rank >= TIER_RANK_ARACHNID:
+        title, intro, icon_key = "Bonded — Arachnid Spider", ARACHNID_INTRO, "arachnid"
+    else:
+        title, intro, icon_key = "Patreon Connected", NO_PLEDGE_INTRO, "arachnid"
+
+    field_groups = _perk_sections(tier_rank, owned_gated_items)
+    field_groups.append(("Your Commands", [("", _bullets(COMMAND_LINES))]))
+
+    return StaticView(title, description=intro, field_groups=field_groups, icon_key=icon_key)
+
+
+async def _owned_gated_items(session, discord_id: int) -> set[str]:
+    """Which of the Arachnid+-gated purchasables this user actually owns — the tier
+    unlocks buying them, so ownership is a separate question from tier."""
+    stmt = select(InventoryItem.item_key).where(
+        InventoryItem.user_id == discord_id,
+        InventoryItem.item_key.in_(ARACHNID_GATED_ITEM_KEYS),
+    )
+    return set((await session.execute(stmt)).scalars())
 
 
 class LinkButtonView(discord.ui.View):
@@ -110,14 +198,40 @@ class PatreonCog(commands.Cog):
 
     @patreon.command(name="link", description="Connect your Patreon account to unlock your perks.")
     async def link(self, ctx: discord.ApplicationContext):
+        # Someone who subscribed before ever linking — or who subscribed, linked, and
+        # then upgraded — has no other way to get their welcome. Re-running /patreon
+        # link re-sends it against their current tier. The authorize button still goes
+        # out alongside it, so a genuine re-link (switching Patreon accounts, or
+        # re-checking a tier that changed on Patreon's side) is unaffected.
+        async with async_session() as session:
+            already_linked = await session.get(PatreonLink, ctx.author.id) is not None
+
         try:
             url = build_authorize_url(ctx.author.id)
         except PatreonLinkError as exc:
             await ctx.respond(str(exc), ephemeral=True)
             return
 
-        message = "Click below to connect your Patreon account. This link is single-use and expires in 10 minutes."
+        if already_linked:
+            message = (
+                "You're already linked — I've re-sent your welcome message with everything "
+                "that's currently active for you.\n\nIf you're switching Patreon accounts or "
+                "your tier changed, use the button below to reconnect."
+            )
+        else:
+            message = "Click below to connect your Patreon account. This link is single-use and expires in 10 minutes."
         view = LinkButtonView(url)
+
+        if already_linked:
+            # Sent as its own message rather than folded into the reply: the welcome is
+            # a Components V2 view, which can't share a message with content or a button.
+            welcomed = await self._send_welcome(ctx.author.id)
+            if not welcomed:
+                message = (
+                    "You're already linked, but I couldn't DM you your welcome message — your DMs "
+                    "are closed. Run `/patreon perks` to see everything that's active.\n\nSwitching "
+                    "accounts or tier changed? Use the button below."
+                )
 
         if ctx.guild is None:
             # Already in DMs — just answer directly, no need to DM on top of a DM.
@@ -125,7 +239,7 @@ class PatreonCog(commands.Cog):
             return
 
         try:
-            await ctx.author.send(message, view=view, ephemeral=True)
+            await ctx.author.send(message, view=view)
             await ctx.respond("Check your DMs — I've sent you a link to connect Patreon.", ephemeral=True)
         except discord.HTTPException:
             # DMs closed — fall back to answering right where the command was run.
@@ -157,39 +271,26 @@ class PatreonCog(commands.Cog):
     async def perks(self, ctx: discord.ApplicationContext):
         async with async_session() as session:
             tier_rank = await get_tier_rank(session, ctx.author.id)
-            stmt = select(InventoryItem.item_key).where(
-                InventoryItem.user_id == ctx.author.id,
-                InventoryItem.item_key.in_(ARACHNID_GATED_ITEM_KEYS),
-            )
-            owned_gated_items = set((await session.execute(stmt)).scalars())
+            owned_gated_items = await _owned_gated_items(session, ctx.author.id)
 
-        e = emoji("arachnid") or ""
-        field_groups = []
-
-        if tier_rank == TIER_RANK_NONE:
-            field_groups.append((
-                None,
-                [("No active perks", "Subscribe at Arachnid or Symbiote and run /patreon link to connect.")],
-            ))
-        else:
-            field_groups.append((
-                f"{e} Arachnid".strip(),
-                [("", "\n".join(f"• {line}" for line in ARACHNID_PERK_LINES))],
-            ))
-            if tier_rank >= TIER_RANK_SYMBIOTE:
-                field_groups.append((
-                    f"{e} Symbiote".strip(),
-                    [("", "\n".join(f"• {line}" for line in SYMBIOTE_PERK_LINES))],
-                ))
-
-            gadget_lines = [
-                f"• {item_label(key, label)} — {'Owned' if key in owned_gated_items else 'Not owned (see /shop browse)'}"
-                for key, label in GATED_ITEM_LABELS.items()
-            ]
-            field_groups.append((f"{e} Arachnid+ Exclusive Gear".strip(), [("", "\n".join(gadget_lines))]))
-
-        view = StaticView("Your Active Perks", field_groups=field_groups)
+        view = StaticView("Your Active Perks", field_groups=_perk_sections(tier_rank, owned_gated_items))
         await ctx.respond(view=view, files=view.files, ephemeral=True)
+
+    async def _send_welcome(self, discord_id: int) -> bool:
+        """DMs the welcome card for whatever tier the user currently resolves to.
+        Returns False if the DM couldn't be delivered (DMs closed), so callers that
+        have somewhere else to put it can fall back instead of silently dropping it."""
+        async with async_session() as session:
+            tier_rank = await get_tier_rank(session, discord_id)
+            owned_gated_items = await _owned_gated_items(session, discord_id)
+
+        view = build_welcome_view(tier_rank, owned_gated_items)
+        try:
+            user = await self.bot.fetch_user(discord_id)
+            await user.send(view=view, files=view.files)
+            return True
+        except discord.HTTPException:
+            return False
 
     async def _callback(self, request: web.Request) -> web.Response:
         code = request.query.get("code")
@@ -213,18 +314,8 @@ class PatreonCog(commands.Cog):
             )
 
         tier_rank = tier_rank_from_name(tier)
-        if tier_rank == TIER_RANK_SYMBIOTE:
-            welcome = SYMBIOTE_WELCOME
-        elif tier_rank == TIER_RANK_ARACHNID:
-            welcome = ARACHNID_WELCOME
-        else:
-            welcome = NO_PLEDGE_WELCOME
-
-        try:
-            user = await self.bot.fetch_user(discord_id)
-            await user.send(welcome)
-        except discord.HTTPException:
-            pass  # DMs closed or similar — the web page confirmation is enough either way
+        log.info("Patreon linked: discord_id=%s tier=%r rank=%s", discord_id, tier, tier_rank)
+        await self._send_welcome(discord_id)
 
         return web.Response(text=CALLBACK_SUCCESS_HTML, content_type="text/html")
 
