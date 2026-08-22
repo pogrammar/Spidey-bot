@@ -20,22 +20,26 @@ from services.patreon_service import TIER_RANK_ARACHNID, TIER_RANK_NONE, TIER_RA
 PATROL_COOLDOWN_SECONDS = 30
 CAMERA_ITEM_KEY = "camera"
 CAMERA_SILVER_ITEM_KEY = "camera_silver"
+CAMERA_GOLD_ITEM_KEY = "camera_gold"
 # Ordered lowest to highest tier — get_equipped_camera picks the best-tier row if
 # more than one is somehow equipped, and shop_service unequips the rest of this
 # family whenever one is bought, so only one is ever actually equipped in practice.
-CAMERA_FAMILY_KEYS = [CAMERA_ITEM_KEY, CAMERA_SILVER_ITEM_KEY]
+CAMERA_FAMILY_KEYS = [CAMERA_ITEM_KEY, CAMERA_SILVER_ITEM_KEY, CAMERA_GOLD_ITEM_KEY]
 
 # Camera tiers (Patreon-exclusive past the base camera, gated per-key in
 # shop_service.GATED_ITEM_MIN_RANK) — break_chance_reduction multiplies down
 # the existing break-chance formula in battle_service.finalize_battle;
 # quality_bump_chance is an independent roll to bump the banked photo's quality up
-# one tier (bronze->silver->gold, capped at gold). Silver's bump is exactly 0.60 —
-# "3 in 5 times" is copy the subscriber is told outright, so it's a promise rather
-# than an interior balance knob: don't nudge it for tuning, change the promise first
-# (GAME_DESIGN.md §6.2). Break-chance reduction (-70%) stays a tuned number.
+# one tier (bronze->silver->gold, capped at gold). Both bump chances (0.60 / 0.80) are
+# copy the subscriber is told outright — "3 in 5" and "4 in 5" — so they're promises
+# rather than interior balance knobs: don't nudge them for tuning, change the promise
+# first (GAME_DESIGN.md §6.2). Break-chance reduction (-70% / -85%) stays a tuned
+# number. Neither knob reaches -100% / 1.00 at any tier on purpose, so camera-break
+# tension and the value of a genuine gold photo both survive the top tier.
 CAMERA_TIER_STATS = {
     CAMERA_ITEM_KEY: {"break_chance_reduction": 0.0, "quality_bump_chance": 0.0},
     CAMERA_SILVER_ITEM_KEY: {"break_chance_reduction": 0.70, "quality_bump_chance": 0.60},
+    CAMERA_GOLD_ITEM_KEY: {"break_chance_reduction": 0.85, "quality_bump_chance": 0.80},
 }
 PHOTO_QUALITY_ORDER = ["bronze", "silver", "gold"]
 CRIME_LEVEL_WEIGHT_BONUS = 0.3  # each point of crime_level nudges crime-outcome odds up

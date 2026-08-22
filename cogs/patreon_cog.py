@@ -88,6 +88,7 @@ GATED_ITEM_LABELS = {
     "spider_bots": "Spider Bots",
     "electric_webbing": "Electric Webbing",
     "camera_silver": "Silver-Grade Camera",
+    "camera_gold": "Gold-Grade Camera",
 }
 
 log = logging.getLogger("spidey")

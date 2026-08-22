@@ -6,7 +6,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.models import InventoryItem, Item, User
 from services.economy import add_wallet
 from services.inventory_service import add_item
-from services.patreon_service import TIER_RANK_ARACHNID, get_tier_rank, tier_requirement_label
+from services.patreon_service import (
+    TIER_RANK_ARACHNID,
+    TIER_RANK_SYMBIOTE,
+    get_tier_rank,
+    tier_requirement_label,
+)
 from services.patrol_service import CAMERA_FAMILY_KEYS
 from utils.icons import item_label
 
@@ -25,6 +30,7 @@ GATED_ITEM_MIN_RANK: dict[str, int] = {
     "spider_bots": TIER_RANK_ARACHNID,
     "electric_webbing": TIER_RANK_ARACHNID,
     "camera_silver": TIER_RANK_ARACHNID,
+    "camera_gold": TIER_RANK_SYMBIOTE,
 }
 
 # For the four callers that only ask "is this item gated at all?" without caring which

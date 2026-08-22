@@ -26,8 +26,8 @@ from services.patrol_service import (
 # Combat reaching into the store looks odd, but this map is exactly "which items does a
 # subscription gate, and at what tier", which is the store's business and shouldn't be
 # duplicated here — a second copy would silently stop tagging the next gated gadget
-# someone adds. Only gadget keys are ever looked up against it (camera_silver is in the
-# same map but never reaches resolve_gadget), so membership is a safe proxy for "using
+# someone adds. Only gadget keys are ever looked up against it (the camera tiers are in
+# the same map but never reach resolve_gadget), so membership is a safe proxy for "using
 # this is itself a perk", and the mapped rank picks which tier's badge to show.
 # See _gated_gadget_tag.
 from services.shop_service import GATED_ITEM_MIN_RANK

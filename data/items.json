@@ -16,6 +16,14 @@
     "price": 1000
   },
   {
+    "key": "camera_gold",
+    "name": "Gold-Grade Camera",
+    "category": "tool",
+    "description": "The best glass money can buy. Almost nothing short of a direct hit puts it out of action, and 4 shots in 5 come out a quality tier better than they had any right to. Symbiote Patreon subscribers only. Equipping it retires whatever camera you had equipped before.",
+    "max_durability": 100,
+    "price": 3000
+  },
+  {
     "key": "spandex_fabric",
     "name": "Spandex Fabric",
     "category": "component",
