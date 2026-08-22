@@ -61,10 +61,10 @@ MAX_VISIT_SECONDS = 180
 EARNINGS_PENALTY_MULTIPLIER = 0.8
 XP_BONUS_MULTIPLIER = 1.2
 
-# Time spent visiting is time not out patrolling — same rate /tutoring uses (~0.1
-# crime per second), scaled by the visit's actual length so a quick check-in barely
-# moves the needle while a long, overdue visit costs more.
-CRIME_RISE_PER_SECOND = 0.1
+# Visiting deliberately does NOT raise city crime. /tutoring is the single source of
+# crime_level now, and /patrol the single sink — keeping it to one lever each is what
+# makes the meter legible. A visit still costs you real time (it blocks /patrol via
+# the shared "busy" lock), which is cost enough on its own.
 
 
 def visit_duration_seconds(happiness_before_visit: int) -> int:
@@ -80,8 +80,6 @@ class VisitResult:
     gift_name: str | None = None
     backfired: bool = False
     visit_seconds: int = 0
-    crime_rise: int = 0
-    new_crime_level: int = 0
 
 
 async def _get_or_create_ally(session: AsyncSession, user_id: int, ally_key: str) -> Ally:
@@ -208,9 +206,6 @@ async def visit_ally(
     ally.banked_happiness = max(0, min(100, current + boost))
     ally.last_visited_at = datetime.datetime.utcnow()
 
-    crime_rise = round(visit_seconds * CRIME_RISE_PER_SECOND)
-    user.crime_level = min(100, user.crime_level + crime_rise)
-
     await session.commit()
 
     return (
@@ -223,7 +218,5 @@ async def visit_ally(
             gift_name=gift_name,
             backfired=backfired,
             visit_seconds=visit_seconds,
-            crime_rise=crime_rise,
-            new_crime_level=user.crime_level,
         ),
     )

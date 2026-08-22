@@ -105,7 +105,7 @@ Combat-tier weights get boosted by `crime_level * CRIME_LEVEL_WEIGHT_BONUS (0.3)
 `difficulty_multiplier(level) = 1 + 0.05 * (level - 1)` (`DIFFICULTY_PER_LEVEL = 0.05`) — level 1 = 1.0x, level 11 = 1.5x, level 21 = 2.0x. Shared by both non-combat XP/cash scaling and combat enemy-stat scaling. Boss fights use the frozen `boss_difficulty_level()` (§4) instead of raw level.
 
 ### 5.4 Non-combat resolution (`nothing`/`scenic`)
-Resolved instantly, no battle UI. `xp = round(rand_range(outcome_xp) * ally_xp_multiplier * difficulty)`, cash (scenic only) similarly scaled, +Biomorphic Webbing bonus roll for Symbiote+ (§9.3). Crime-level always decays by `rand_range([3, 6])` regardless of outcome. A hazard may fire (§5.6) regardless of combat/non-combat.
+Resolved instantly, no battle UI. `xp = round(rand_range(outcome_xp) * ally_xp_multiplier * difficulty)`, cash (scenic only) similarly scaled, +Biomorphic Webbing bonus roll for Symbiote+ (§9.3). Crime-level always decays by `rand_range([2, 3])` regardless of outcome (`CRIME_LEVEL_DECAY_RANGE`; sizing rationale in §5.7). A hazard may fire (§5.6) regardless of combat/non-combat.
 
 ### 5.5 Combat resolution
 `battle_service.py`'s `ENEMY_STATS` dict defines per-tier base stats:
@@ -147,12 +147,26 @@ Enemy stats from the capped difficulty:
 
 **Scavenge (component drop)**: `drop_chance = min(0.9, base_drop_chance + scavenge_bonus)`. If `suit_integrity < SCAVENGE_URGENCY_THRESHOLD (50)`, urgency adds up to `SCAVENGE_URGENCY_BONUS_MAX (0.25)` more, scaled linearly by how far below 50 you are ("desperate scavenging when you're hurt").
 
-**Crime-level decay** (post-fight): `CRIME_LEVEL_DECAY_RANGE_WIN = [6,10]` on a clean win, `CRIME_LEVEL_DECAY_RANGE_LOSS = [1,3]` otherwise — a real win calms the city more than showing up and losing.
+**Crime-level decay** (post-fight): `CRIME_LEVEL_DECAY_RANGE_WIN = [4,6]` on a clean win, `CRIME_LEVEL_DECAY_RANGE_LOSS = [1,3]` otherwise — a real win calms the city more than showing up and losing. Uniform across every crime tier and boss fights alike; boss wins are rare enough that a special case would barely register next to routine crime-tier outcomes. Sizing rationale in §5.7.
 
 ### 5.6 Donations & hazards (`data/loot_tables.json`)
 Rolled independently on every patrol resolution (combat or not):
 - **Donations** (pure upside): `grateful_bystander` 12% chance, +$15–40; `city_council_thanks` 5% chance, +$50–120.
 - **Hazards** (pure downside, "Parker Luck"): `medical_bill` 5%, -$30 to -80; `lost_wallet_cash` 3%, -$15 to -40; `mj_birthday_gift` 2%, -$25 to -70; `aunt_may_flowers` 3%, -$15 to -35. The two ally-themed hazards get their chance multiplied by `NEGLECT_HAZARD_MULTIPLIER (2.5)` if that specific ally's happiness is below `LOW_HAPPINESS_THRESHOLD (30)` — neglect makes "Parker Luck" hit harder, thematically.
+
+### 5.7 The `crime_level` dial — one source, one sink
+Set 2026-08-22. `crime_level` has exactly **one source (`/tutoring`)** and **one sink (`/patrol`)**. Nothing else moves it — `/ally visit` used to raise it too and deliberately no longer does (§12), because one lever each is what makes the meter legible to a player who never reads a wiki: *tutoring lets the city slide, patrolling puts it back*.
+
+The two sides are sized for **per-minute parity, not per-action parity** — the wall-clock each activity costs is what's being balanced:
+
+| | per action | wall-clock cost | per minute |
+|---|---|---|---|
+| `/tutoring` rise | `+8..15`, plus `+10` on an unhandled 12% jam | 120s `busy` lock | **≈6.35** |
+| `/patrol` drain | `[2,3]` non-combat, `[4,6]` win, `[1,3]` loss | 30s cooldown | **5.5–7.4** (rises with crime, see below) |
+
+So **one tutoring session takes ≈4 patrols to clear**, and a 4:1 patrol-to-tutoring habit sits mid-meter. Sizing these 1:1 per action instead would drain ≈4x faster than it builds and pin the meter at 0 — which would quietly switch off *both* things `crime_level` actually drives (the combat-odds bonus in §5.2 and the ≥70 reputation-XP penalty in §3), turning a mechanic into dead code.
+
+The drain is **self-stabilizing**: higher crime means more combat encounters (§5.2), and combat clears more than a quiet street does, so patrol's drain climbs from ≈5.9/min at crime 0 to ≈6.7/min at crime 90 (at a 60% win rate). Crime converges rather than running away. Verified by simulation across 40/60/80% win rates: at 4 patrols per tutoring the meter settles mid-range, below that it pins high and the XP penalty bites, above it the city stays calm.
 
 ---
 
@@ -333,7 +347,7 @@ Five perks are fully speced with locked numbers but unbuilt. **Track ownership w
 
 ## 13. Tutoring (`/tutoring`)
 
-`services/tutoring_service.py`. Safe, steady cash — locks `/patrol` for `TUTORING_LOCK_SECONDS = 2 minutes` (shared "busy" system with `/ally visit`). Base: `cash = round(rand_range([80,140]) * reputation_multiplier * earnings_penalty_multiplier)`, `xp = round(rand_range([10,20]) * ally_xp_multiplier)`, `crime_rise = rand_range([8,15])`. A 12% "jam" event (`JAM_CHANCE`, shared pattern with Bugle) can fire: handled cleanly by an equipped gadget → +$15-35 bonus; unhandled → `+10` extra crime_level (`JAM_PENALTY_CRIME_RISE`) and no bonus.
+`services/tutoring_service.py`. Safe, steady cash — locks `/patrol` for `TUTORING_LOCK_SECONDS = 2 minutes` (shared "busy" system with `/ally visit`). Base: `cash = round(rand_range([80,140]) * reputation_multiplier * earnings_penalty_multiplier)`, `xp = round(rand_range([10,20]) * ally_xp_multiplier)`, `crime_rise = rand_range([8,15])` — **the only thing in the game that raises `crime_level`** (§5.7). A 12% "jam" event (`JAM_CHANCE`, shared pattern with Bugle) can fire: handled cleanly by an equipped gadget → +$15-35 bonus; unhandled → `+10` extra crime_level (`JAM_PENALTY_CRIME_RISE`) and no bonus.
 
 ---
 

@@ -47,14 +47,25 @@ COMBAT_READY_PATROLS_WEIGHT_BONUS = 15  # Arachnid+ Patreon perk — see _roll_p
 # battle_service.py, since non-combat patrols don't have either system at all.
 BIOMORPHIC_WEBBING_CASH_CHANCE = 0.25
 BIOMORPHIC_WEBBING_CASH_RANGE = [15, 35]
-CRIME_LEVEL_DECAY_RANGE = [3, 6]  # patrolling calms the city back down — non-combat outcomes
+# /tutoring is the only thing that raises crime_level and /patrol is the only thing
+# that lowers it — one lever each, which is what keeps the meter legible. The drain
+# is sized for per-MINUTE parity against tutoring's rise, not per-action: tutoring
+# adds +8..15 while blocking patrol for 2 minutes, and patrol's cooldown is 30s, so
+# one tutoring session costs the same wall-clock as ~4 patrols and should take about
+# 4 patrols to clear. Sizing these 1:1 per action instead would drain crime ~4x
+# faster than it builds, pinning the meter at 0 — which would quietly switch off both
+# things crime_level actually drives: the combat-odds bonus below and the >=70
+# reputation-XP penalty in economy.add_reputation.
+CRIME_LEVEL_DECAY_RANGE = [2, 3]  # patrolling calms the city back down — non-combat outcomes
 
 # Combat outcomes use a bigger split instead of the flat range above — actually
 # stopping a crime should calm the city more than showing up and losing. Uniform
 # across every crime tier and boss fights alike (see battle_service.finalize_battle)
 # — no tier-specific bump, since boss wins are rare enough that a special case for
-# them would barely ever be felt next to routine crime-tier wins/losses.
-CRIME_LEVEL_DECAY_RANGE_WIN = [6, 10]
+# them would barely ever be felt next to routine crime-tier wins/losses. A combat
+# patrol also eats more wall-clock than a non-combat one, so the bigger clear is
+# what keeps it time-fair rather than being a pure reward.
+CRIME_LEVEL_DECAY_RANGE_WIN = [4, 6]
 CRIME_LEVEL_DECAY_RANGE_LOSS = [1, 3]
 
 # every patrol burns web fluid to get around — no vials on hand means paying cash

@@ -108,10 +108,6 @@ class AllyCog(commands.Cog):
                 "Gift Fatigue", "Too many gifts in a row — give it a visit with nothing next time.",
             ))
         fields.append(("Time Spent", format_remaining(result.visit_seconds)))
-        fields.append((
-            "City Crime Level",
-            f"+{result.crime_rise} (now {result.new_crime_level}/100) — nobody's out there while you're here.",
-        ))
 
         view = StaticView(
             f"Visiting {name}",

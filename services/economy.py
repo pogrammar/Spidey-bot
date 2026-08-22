@@ -31,12 +31,13 @@ def at_boss_gate(user: User) -> bool:
 
 
 # A city left to run wild costs you focus — crime_level rises when you skip patrol
-# for /tutoring or /ally visit, and decays back down whenever you actually patrol
-# (see patrol_service.py / battle_service.py / ally_service.py). Past this
-# threshold, reputation XP gains take a flat cut, same threshold-based shape as the
-# existing ally-happiness penalty. Doesn't apply to a boss-clear promotion (that's
-# a direct level-floor snap, not a scaled XP grant — same boundary the booster XP
-# perk respects).
+# for /tutoring (its only source) and decays back down whenever you actually patrol
+# (its only sink — see tutoring_service.py vs patrol_service.py / battle_service.py).
+# The two are sized for per-minute parity, so ~4 patrols clear one tutoring session.
+# Past this threshold, reputation XP gains take a flat cut, same threshold-based
+# shape as the existing ally-happiness penalty. Doesn't apply to a boss-clear
+# promotion (that's a direct level-floor snap, not a scaled XP grant — same boundary
+# the booster XP perk respects).
 HIGH_CRIME_THRESHOLD = 70
 CRIME_XP_PENALTY_MULTIPLIER = 0.8
 
