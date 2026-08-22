@@ -13,22 +13,26 @@ from utils.icons import item_label
 
 ALLY_NAMES = {"aunt_may": "Aunt May", "mj": "MJ"}
 
-# Decays fast on purpose — this needs to be a thing you actually check on, not a
-# number that quietly takes care of itself. At 6/hour, thriving (70+) erodes to
-# neglected (<30) in under 7 hours of not showing up.
-DECAY_PER_HOUR = 6.0
+# Decays on purpose — this needs to be a thing you actually check on, not a number
+# that quietly takes care of itself. Written as a full-drain duration rather than a
+# raw per-hour rate because the duration is the actual design decision; the rate is
+# just what falls out of it. At 24h: thriving (70+) reaches neglected (<30) after
+# 9.6h away, and a full meter drops out of thriving after 7.2h.
+FULL_DECAY_HOURS = 24.0
+DECAY_PER_HOUR = 100 / FULL_DECAY_HOURS  # 4.17/hour
 
 # Supportive Allies ("allies" growth choice) — NOT currently reachable by Patreon
 # subscribers (that mechanic belongs to the separate, not-yet-rebuilt server-boost
-# perk track — see cogs/patreon_cog.py's note). Left in place dormant.
+# perk track — see cogs/patreon_cog.py's note). Left in place dormant. On the 24h
+# baseline this stretches the full drain to ~34h.
 SUPPORTIVE_ALLIES_DECAY_MULTIPLIER = 0.7
 
 # The Arachnid tier's one drawback — bonded with the spider, allies keep a closer
-# eye on you now, so happiness slips faster if you don't show up. +30% mirrors the
-# same "opposite of an existing tuned number" convention Sonic Dampener uses.
-# Always-on for tier_rank >= ARACHNID, no choice involved — unlike Supportive
-# Allies above, this isn't opt-in.
-ARACHNID_ALLY_DECAY_INCREASE = 0.3
+# eye on you now, so happiness slips faster if you don't show up. +50% takes the
+# full drain from 24h down to 16h (24 / 1.5 = 16), and thriving->neglected from
+# 9.6h to 6.4h. Always-on for tier_rank >= ARACHNID, no choice involved — unlike
+# Supportive Allies above, this isn't opt-in.
+ARACHNID_ALLY_DECAY_INCREASE = 0.5
 
 PLAIN_VISIT_BOOST = 20  # a gift-free visit — free, modest, resets gift burnout
 LOW_HAPPINESS_THRESHOLD = 30  # any ally below this = neglected
