@@ -6,7 +6,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.models import InventoryItem, Item, User
 from services.economy import add_wallet
 from services.inventory_service import add_item
+from services.patreon_service import TIER_RANK_ARACHNID, get_tier_rank
+from services.patrol_service import CAMERA_FAMILY_KEYS
 from utils.icons import item_label
+
+# Arachnid+ Patreon-exclusive items — everyone sees them in the shop (same as any
+# reputation-locked gadget), but only an Arachnid+ subscriber can actually buy one.
+ARACHNID_GATED_ITEM_KEYS = {"spider_bots", "electric_webbing", "camera_silver"}
 
 
 async def list_shop_items(session: AsyncSession) -> list[Item]:
@@ -32,6 +38,14 @@ async def buy_item(session: AsyncSession, user: User, item_key: str) -> tuple[bo
             f"You're level {user.reputation_level}."
         )
 
+    if item.key in ARACHNID_GATED_ITEM_KEYS:
+        tier_rank = await get_tier_rank(session, user.discord_id)
+        if tier_rank < TIER_RANK_ARACHNID:
+            return False, (
+                f"{item_label(item.key, item.name)} is an Arachnid+ Patreon perk. "
+                f"Subscribe and link your account with /patreon link to buy it."
+            )
+
     if item.category == "tool":
         existing = await _get_tool_row(session, user.discord_id, item_key)
         if existing is not None and existing.equipped:
@@ -43,6 +57,18 @@ async def buy_item(session: AsyncSession, user: User, item_key: str) -> tuple[bo
     await add_wallet(session, user, -item.price, reason=f"shop:buy:{item_key}")
 
     if item.category == "tool":
+        if item_key in CAMERA_FAMILY_KEYS:
+            # Only one camera tier can ever be equipped at a time — buying either
+            # one swaps it in and retires whatever camera you had equipped before.
+            stmt = select(InventoryItem).where(
+                InventoryItem.user_id == user.discord_id,
+                InventoryItem.item_key.in_(CAMERA_FAMILY_KEYS),
+                InventoryItem.item_key != item_key,
+                InventoryItem.equipped.is_(True),
+            )
+            for other in (await session.execute(stmt)).scalars():
+                other.equipped = False
+
         existing = await _get_tool_row(session, user.discord_id, item_key)
         if existing is not None:
             existing.quantity = 1

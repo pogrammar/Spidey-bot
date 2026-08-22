@@ -19,6 +19,25 @@ from services.patreon_service import TIER_RANK_ARACHNID, TIER_RANK_NONE, TIER_RA
 
 PATROL_COOLDOWN_SECONDS = 30
 CAMERA_ITEM_KEY = "camera"
+CAMERA_SILVER_ITEM_KEY = "camera_silver"
+# Ordered lowest to highest tier — get_equipped_camera picks the best-tier row if
+# more than one is somehow equipped, and shop_service unequips the rest of this
+# family whenever one is bought, so only one is ever actually equipped in practice.
+CAMERA_FAMILY_KEYS = [CAMERA_ITEM_KEY, CAMERA_SILVER_ITEM_KEY]
+
+# Camera tiers (Arachnid+ Patreon-exclusive past the base camera, gated in
+# shop_service.ARACHNID_GATED_ITEM_KEYS) — break_chance_reduction multiplies down
+# the existing break-chance formula in battle_service.finalize_battle;
+# quality_bump_chance is an independent roll to bump the banked photo's quality up
+# one tier (bronze->silver->gold, capped at gold). Silver's bump is exactly 0.60 —
+# "3 in 5 times" is copy the subscriber is told outright, so it's a promise rather
+# than an interior balance knob: don't nudge it for tuning, change the promise first
+# (GAME_DESIGN.md §6.2). Break-chance reduction (-70%) stays a tuned number.
+CAMERA_TIER_STATS = {
+    CAMERA_ITEM_KEY: {"break_chance_reduction": 0.0, "quality_bump_chance": 0.0},
+    CAMERA_SILVER_ITEM_KEY: {"break_chance_reduction": 0.70, "quality_bump_chance": 0.60},
+}
+PHOTO_QUALITY_ORDER = ["bronze", "silver", "gold"]
 CRIME_LEVEL_WEIGHT_BONUS = 0.3  # each point of crime_level nudges crime-outcome odds up
 COMBAT_READY_PATROLS_WEIGHT_BONUS = 15  # Arachnid+ Patreon perk — see _roll_patrol_outcome
 
@@ -244,6 +263,10 @@ class PatrolResult:
     organic_webbing_active: bool = False
     ally_xp_bonus: bool = False
     difficulty_level: int = 1
+    # How much of cash_gained came from Biomorphic Webbing (Symbiote+ perk), so the
+    # card can attribute it instead of folding it invisibly into one bigger number —
+    # the perk-visibility rule in GAME_DESIGN.md §9. 0 means the roll didn't fire.
+    biomorphic_cash: int = 0
 
 
 @dataclass
@@ -336,7 +359,8 @@ async def finish_noncombat_patrol(
     if "cash" in outcome:
         result.cash_gained = rand_range(outcome["cash"])
         if tier_rank >= TIER_RANK_SYMBIOTE and random.random() < BIOMORPHIC_WEBBING_CASH_CHANCE:
-            result.cash_gained += rand_range(BIOMORPHIC_WEBBING_CASH_RANGE)
+            result.biomorphic_cash = rand_range(BIOMORPHIC_WEBBING_CASH_RANGE)
+            result.cash_gained += result.biomorphic_cash
         await add_wallet(session, user, result.cash_gained, reason=f"patrol:{outcome['key']}")
 
     # The actual applied amount, not the pre-penalty/pre-cap roll — a crime penalty
@@ -382,11 +406,22 @@ def _roll_patrol_outcome(crime_level: int, tier_rank: int = TIER_RANK_NONE) -> d
 async def get_equipped_camera(session: AsyncSession, user_id: int) -> InventoryItem | None:
     stmt = select(InventoryItem).where(
         InventoryItem.user_id == user_id,
-        InventoryItem.item_key == CAMERA_ITEM_KEY,
+        InventoryItem.item_key.in_(CAMERA_FAMILY_KEYS),
         InventoryItem.equipped.is_(True),
     )
-    result = await session.execute(stmt)
-    return result.scalar_one_or_none()
+    rows = (await session.execute(stmt)).scalars().all()
+    if not rows:
+        return None
+    return max(rows, key=lambda r: CAMERA_FAMILY_KEYS.index(r.item_key))
+
+
+def camera_tier_stats(item_key: str) -> dict:
+    return CAMERA_TIER_STATS.get(item_key, CAMERA_TIER_STATS[CAMERA_ITEM_KEY])
+
+
+def bump_photo_quality(quality: str) -> str:
+    idx = PHOTO_QUALITY_ORDER.index(quality)
+    return PHOTO_QUALITY_ORDER[min(idx + 1, len(PHOTO_QUALITY_ORDER) - 1)]
 
 
 def roll_donation() -> dict | None:

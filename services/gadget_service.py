@@ -32,6 +32,10 @@ GADGET_EFFECTS: dict[str, dict] = {
     "ricochet_web": {"kind": "scavenge_boost", "base_chance": 0.44, "bonus_per_level": 0.14, "magnitude": 0.25},
     "upshot": {"kind": "bonus_xp", "base_chance": 0.30, "bonus_per_level": 0.145, "magnitude": 0.5},
     "concussion_burst": {"kind": "group_defense", "base_chance": 0.38, "bonus_per_level": 0.19, "magnitude": 0.5},
+    # Arachnid+ Patreon-exclusive (purchase gated in shop_service.ARACHNID_GATED_ITEM_KEYS)
+    # — mechanically just regular gadgets otherwise, same Select/button flow as the five above.
+    "spider_bots": {"kind": "bonus_damage", "base_chance": 0.20, "bonus_per_level": 0.12, "bonus_range": [5, 12]},
+    "electric_webbing": {"kind": "shock_burst", "base_chance": 0.20, "bonus_per_level": 0.12, "bonus_range": [8, 15]},
 }
 
 
@@ -41,6 +45,7 @@ class GadgetEffectResult:
     kind: str
     magnitude: float | None = None
     cash_range: list[int] | None = None
+    bonus_range: list[int] | None = None
 
 
 @dataclass
@@ -219,6 +224,7 @@ async def roll_gadget_effect(
         kind=effect["kind"],
         magnitude=effect.get("magnitude"),
         cash_range=effect.get("cash_range"),
+        bonus_range=effect.get("bonus_range"),
     )
 
 

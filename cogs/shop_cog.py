@@ -7,7 +7,7 @@ from discord.ext import commands
 from db.base import async_session
 from db.models import Item
 from services.economy import get_or_create_user
-from services.shop_service import buy_item, list_shop_items
+from services.shop_service import ARACHNID_GATED_ITEM_KEYS, buy_item, list_shop_items
 from utils.embeds import error_embed
 from utils.icons import emoji, item_label
 from utils.v2_embeds import PaginatedView, StaticView, add_field_groups
@@ -45,6 +45,17 @@ def _is_locked(item: Item, user_level: int) -> bool:
     return item.category == "gadget" and item.unlock_level is not None and user_level < item.unlock_level
 
 
+def _arachnid_branding(item: Item) -> str:
+    """Arachnid+ Patreon-exclusive items (see shop_service.ARACHNID_GATED_ITEM_KEYS)
+    are visible to everyone, same as a reputation-locked gadget — this just marks
+    which ones need a subscription to actually buy, using the emoji alone (no
+    "Arachnid" text tacked on) per the same attribution convention battle text uses."""
+    if item.key not in ARACHNID_GATED_ITEM_KEYS:
+        return ""
+    e = emoji("arachnid")
+    return f"{e} Patreon exclusive" if e else "Patreon exclusive"
+
+
 def _item_field(item: Item, user_level: int) -> tuple[str, str]:
     if _is_locked(item, user_level):
         lock_emoji = emoji("locked") or "🔒"
@@ -52,7 +63,9 @@ def _item_field(item: Item, user_level: int) -> tuple[str, str]:
             item_label(item.key, item.name),
             f"{lock_emoji} (gadget not unlocked — needs reputation level {item.unlock_level})",
         )
-    return (f"{item_label(item.key, item.name)} — ${item.price:,}", item.description)
+    branding = _arachnid_branding(item)
+    description = f"{branding}\n{item.description}" if branding else item.description
+    return (f"{item_label(item.key, item.name)} — ${item.price:,}", description)
 
 
 def _build_shop_pages(items: list[Item], user_level: int) -> list[dict]:
@@ -194,7 +207,8 @@ class ShopBrowseView(discord.ui.DesignerView):
         if banner:
             body = banner
         elif item is not None:
-            body = item.description or ""
+            branding = _arachnid_branding(item)
+            body = f"{branding}\n{item.description}" if branding else (item.description or "")
         else:
             body = "Pick something from the dropdown below."
         header_text = f"# {title}"

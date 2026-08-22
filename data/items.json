@@ -8,6 +8,14 @@
     "price": 150
   },
   {
+    "key": "camera_silver",
+    "name": "Silver-Grade Camera",
+    "category": "tool",
+    "description": "A real upgrade over the beat-up 35mm — sturdier housing and a better lens. Far less likely to break under fire, and a real shot at bumping a photo up a quality tier. Arachnid+ Patreon subscribers only. Equipping it retires whatever camera you had equipped before.",
+    "max_durability": 100,
+    "price": 1000
+  },
+  {
     "key": "spandex_fabric",
     "name": "Spandex Fabric",
     "category": "component",
@@ -108,5 +116,23 @@
     "max_durability": 100,
     "price": 900,
     "unlock_level": 20
+  },
+  {
+    "key": "spider_bots",
+    "name": "Spider Bots",
+    "category": "gadget",
+    "description": "A swarm of palm-sized drones that dart in on their own — no aiming required, just extra damage while the fight's still going. Arachnid+ Patreon subscribers only.",
+    "max_durability": 100,
+    "price": 550,
+    "unlock_level": 8
+  },
+  {
+    "key": "electric_webbing",
+    "name": "Electric Webbing",
+    "category": "gadget",
+    "description": "Web fluid cut with a live current. Fires automatically on a landed hit — bonus damage and the shock keeps them from swinging back that round. Arachnid+ Patreon subscribers only.",
+    "max_durability": 100,
+    "price": 750,
+    "unlock_level": 14
   }
 ]
