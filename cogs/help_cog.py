@@ -3,14 +3,30 @@ from discord.ext import commands
 
 from db.base import async_session
 from services.economy import get_or_create_user
+from services.patreon_service import PATREON_PAGE_URL
 from utils.icons import emoji as icon_emoji, item_label
+from utils.links import BOT_INVITE_URL
 from utils.tier_accent import current_accent
 from utils.v2_embeds import add_field_groups, make_container
 
-# One topic per subject instead of several crammed onto one page — /help used to
-# bundle 3 unrelated subjects per "page" (Daily + Earning + Money all at once),
-# which made page 1 huge. Splitting each subject out to its own dropdown entry
-# fixes the size problem directly, not just the navigation around it.
+# One entry per *stage of play*, not one per command group.
+#
+# This has been tuned in both directions and both extremes are wrong. It started as
+# 3 unrelated subjects crammed onto each page (Daily + Earning + Money at once), which
+# made page 1 enormous. Splitting every subject into its own dropdown entry fixed the
+# size but grew to 15 options, and a 15-item dropdown is its own kind of unreadable —
+# you're scanning a list to find out where a thing might be instead of reading about it.
+#
+# The grouping below follows the loop in the "loop" topic, so the categories match the
+# order you actually do things in: fuel and fight, then get paid, then keep the roof on.
+# Two-to-four commands per topic, with `-#` eyebrow labels inside the longer bodies so
+# they stay scannable — that's the ceiling. Anything that pushes a body past roughly one
+# screen wants to be its own topic again, and anything that would be a topic of one line
+# belongs folded into a neighbour.
+#
+# Patreon and /invite are deliberately NOT here: they're outbound links rather than
+# gameplay reference, so they're link buttons on the card (see _render) with their
+# command-side details in the footer.
 OVERVIEW_TITLE = "Friendly Neighborhood Cheat Sheet"
 OVERVIEW_BODY = (
     "You're Peter Parker. Rent's due, the camera's held together with tape, and "
@@ -18,169 +34,124 @@ OVERVIEW_BODY = (
     "Pick a topic from the dropdown below."
 )
 
+# Small print under the dropdown, on every page. Carries what the two link buttons
+# can't say: that there's an in-bot version of the Patreon pitch (the tier breakdown,
+# without leaving Discord), and that a pledge does nothing at all until it's connected —
+# which is the one genuinely load-bearing fact in this whole block. `/invite` is here
+# because the button is for *you* clicking it; the command is for posting the link so
+# somebody else can.
+FOOTER_LINES = [
+    "`/patreon subscribe` — both tiers in full. `/patreon link` connects a pledge you already have.",
+    "`/patreon perks` — what's live for you · `/invite` — post the install link into a channel.",
+]
+
 TOPICS = [
     {
-        "key": "daily",
-        "emoji": icon_emoji("streak") or "🔥",
-        "title": "Daily",
-        "summary": "Free daily cash, XP, and streak bonuses.",
+        "key": "loop",
+        "emoji": "🔄",
+        "title": "The Loop, Start to Finish",
+        "summary": "The whole cycle in one line. Start here.",
         "body": (
-            "• `/daily claim` — free cash, XP, and a random bonus pull, once a day.\n"
-            "• Rewards grow with your streak — big payouts at milestones (7/14/30/60/100 days).\n"
-            "• Miss 48 hours and the streak resets.\n"
-            "• `/daily status` — check without claiming.\n"
-            "• `/leaderboard` — see how your streak stacks up against everyone else."
+            "`/lab brew` → `/patrol` → `/bugle submit` → `/bank deposit` → "
+            "`/apartment pay` + `/workbench repair`\n\n"
+            "Brew fluid, spend it fighting crime, sell the photos to the Bugle, bank the "
+            "cash before another player takes it, then pay rent and patch the suit. "
+            "Everything else in this menu feeds one of those steps.\n\n"
+            "Brand new? `/start` walks you through the first few minutes."
         ),
     },
     {
         "key": "patrol",
         "emoji": icon_emoji("attack") or "🕸️",
-        "title": "Patrol",
-        "summary": "Fight crime — costs Web-Fluid, pays in XP and cash.",
+        "title": "Patrol & Gear",
+        "summary": "Fight crime — and the fluid, gadgets and suit that let you.",
         "body": (
-            f"• `/patrol` — swing out and see what's happening. Costs 1 "
-            f"{item_label('web_fluid_vial', 'Web-Fluid Vial')} (or cash if you're out).\n"
-            "• Crimes turn into a real fight: Attack, Evade, or Use Gadget each round — your call decides it.\n"
-            "• Evade sets up a guaranteed bonus-damage Attack next round.\n"
-            "• Gets tougher as your reputation climbs. 30 sec cooldown."
-        ),
-    },
-    {
-        "key": "earning",
-        "emoji": icon_emoji("camera") or "📸",
-        "title": "Work",
-        "summary": "Sell patrol photos, or tutor for safe cash.",
-        "body": (
-            "• `/bugle photos` — check what photos you're holding.\n"
-            "• `/bugle submit` — sell them all to JJJ. 1 min cooldown.\n"
-            "• `/tutoring` — guaranteed safe cash, but locks you out of patrol for 2 min."
+            f"`/patrol` — swing out and see what's happening. Costs 1 "
+            f"{item_label('web_fluid_vial', 'Web-Fluid Vial')} (or cash if you're out). "
+            "Crimes turn into a real fight: **Attack**, **Evade** or **Use Gadget** each "
+            "round — your call decides it. Evade sets up a guaranteed bonus-damage Attack "
+            "next round. Gets tougher as your reputation climbs. 30 sec cooldown.\n\n"
+            "-# FUEL\n"
+            f"`/lab brew` — start a {item_label('web_fluid_vial', 'Web-Fluid')} batch. "
+            "`/lab status` / `/lab collect` — check on it, then collect.\n\n"
+            "-# GADGETS\n"
+            "`/gadget panel` — click-through menu to equip, unequip and upgrade. Carry "
+            "**2 at once**; in a battle each one gets its own \"Use\" button, so which two "
+            "you bring is a real choice. Unlocks by reputation level: "
+            f"{item_label('web_shooters', 'Web-Shooters')} (1), "
+            f"{item_label('web_grabber', 'Web Grabber')} (5), "
+            f"{item_label('ricochet_web', 'Ricochet Web')} (10), "
+            f"{item_label('upshot', 'Upshot')} (15), "
+            f"{item_label('concussion_burst', 'Concussion Burst')} (20). Each can wear out "
+            "and break mid-fight.\n\n"
+            "-# SUIT\n"
+            "`/workbench status` — integrity, repair cost, components on hand. "
+            "`/workbench repair` — back to 100% using cash + scavenged components. Patrol "
+            "warns you if you're low and can't afford it."
         ),
     },
     {
         "key": "money",
         "emoji": icon_emoji("wallet") or "💰",
-        "title": "Finance",
-        "summary": "Wallet, bank, and what you're carrying.",
+        "title": "Money",
+        "summary": "Daily cash, paid work, and where to keep it.",
         "body": (
-            "`/balance` — wallet, bank, reputation, suit integrity.\n\n"
-            "`/inventory` — what you're carrying.\n\n"
+            "-# FREE\n"
+            "`/daily claim` — cash, XP and a random bonus pull, once a day. Rewards grow "
+            "with your streak, with big payouts at 7/14/30/60/100 days; miss 48 hours and "
+            "it resets. `/daily status` checks without claiming.\n\n"
+            "-# PAID WORK\n"
+            f"`/bugle photos` then `/bugle submit` — sell the "
+            f"{item_label('camera', 'photos')} from your patrols to JJJ. 1 min cooldown.\n"
+            "`/tutoring` — guaranteed safe cash, but locks you out of patrol for 2 min.\n\n"
+            "-# HOLDING ON TO IT\n"
+            "`/balance` — wallet, bank, reputation, suit integrity. `/inventory` — what "
+            "you're carrying.\n"
             "`/bank deposit` / `/bank withdraw` — wallet cash can be stolen, bank cash "
-            "can't. Bank capacity grows on its own as you fill it."
+            "can't. Bank capacity grows on its own as you fill it.\n\n"
+            "`/leaderboard` — how your streak stacks up against everyone else."
         ),
     },
     {
         "key": "bills",
         "emoji": "🏚️",
-        "title": "Bills",
+        "title": "Rent & Eviction",
         "summary": "Rent, due dates, and the eviction meter.",
         "body": (
             "`/apartment status` — rent due date and eviction meter.\n\n"
-            "`/apartment pay` — pay $400 rent. Miss it too often and your workbench "
-            "gets locked."
+            "`/apartment pay` — pay $400 rent. Miss it too often and your workbench gets "
+            "locked, which means no suit repairs until you're square."
         ),
     },
     {
-        "key": "suit",
-        "emoji": icon_emoji("suit_integrity") or "🔧",
-        "title": "Suit",
-        "summary": "Integrity, repair cost, and components.",
-        "body": (
-            "`/workbench status` — integrity, repair cost, components on hand.\n\n"
-            "`/workbench repair` — restore to 100% using cash + scavenged components. "
-            "Patrol warns you if you're low and can't afford it."
-        ),
-    },
-    {
-        "key": "gadgets",
-        "emoji": icon_emoji("gadgets_category") or "🦾",
-        "title": "Gadgets",
-        "summary": "Equip, unequip, and upgrade your loadout.",
-        "body": (
-            "`/gadget panel` — click-through menu to equip, unequip, and upgrade.\n\n"
-            "Carry **2 at once** — in a patrol battle you get a separate \"Use\" button "
-            "for each, so which two you bring is a real choice. Unlocks by reputation level: "
-            f"{item_label('web_shooters', 'Web-Shooters')} (1), {item_label('web_grabber', 'Web Grabber')} (5), "
-            f"{item_label('ricochet_web', 'Ricochet Web')} (10), {item_label('upshot', 'Upshot')} (15), "
-            f"{item_label('concussion_burst', 'Concussion Burst')} (20). Each can wear out and break mid-fight."
-        ),
-    },
-    {
-        "key": "pvp",
-        "emoji": icon_emoji("pvp") or "🥊",
-        "title": "PvP",
-        "summary": "Shake down other players for cash.",
-        "body": "`/shakedown @user` — try to steal a cut of their wallet. Can backfire and cost you instead.",
-    },
-    {
-        "key": "store",
+        "key": "trading",
         "emoji": icon_emoji("store") or "🛒",
-        "title": "General Store",
-        "summary": "Buy cameras, components, gifts, and gadgets.",
-        "body": "`/shop browse` or `/shop buy` — camera, repair components, gifts, gadgets.",
-    },
-    {
-        "key": "trade_post",
-        "emoji": icon_emoji("market") or "🏪",
-        "title": "Trade Post",
-        "summary": "Buy and sell with other players.",
+        "title": "Buying & Trading",
+        "summary": "The general store, and dealing with other players.",
         "body": (
-            "`/market listings` — browse what's for sale.\n\n"
-            "`/market sell` / `/market buy` / `/market cancel` — trade with other players."
+            "-# GENERAL STORE\n"
+            "`/shop browse` or `/shop buy` — cameras, repair components, gifts, gadgets. "
+            "Bought from the bot, always in stock.\n\n"
+            "-# TRADE POST\n"
+            "`/market listings` — browse what other players are selling.\n"
+            "`/market sell` / `/market buy` / `/market cancel` — your side of it."
         ),
     },
     {
-        "key": "allies",
+        "key": "people",
         "emoji": "❤️",
-        "title": "Aunt May & MJ",
-        "summary": "Keep your allies happy for bonus reputation.",
+        "title": "People",
+        "summary": "Aunt May, MJ, and shaking down other players.",
         "body": (
-            "`/ally check` — see how neglected they are.\n\n"
-            "`/ally visit` — spend time, or bring a gift from /shop. Repeating the same "
-            "gift (or gifting every visit) backfires.\n\n"
+            "-# ALLIES\n"
+            "`/ally check` — see how neglected Aunt May and MJ are.\n"
+            "`/ally visit` — spend time, or bring a gift from `/shop`. Repeating the same "
+            "gift (or gifting every visit) backfires.\n"
             "Keeping both happy boosts reputation gains; neglecting either hurts your "
-            "Bugle and Tutoring pay."
-        ),
-    },
-    {
-        "key": "lab",
-        "emoji": icon_emoji("lab") or "🧪",
-        "title": "Chem Lab",
-        "summary": "Brew the Web-Fluid that fuels /patrol.",
-        "body": (
-            f"`/lab brew` — start a {item_label('web_fluid_vial', 'Web-Fluid')} batch. This is what fuels "
-            "/patrol.\n\n`/lab status` / `/lab collect` — check on it, then collect."
-        ),
-    },
-    {
-        "key": "patreon",
-        "emoji": icon_emoji("arachnid") or "🕷️",
-        "title": "Patreon Perks",
-        "summary": "Two subscriber tiers, and how to connect one.",
-        "body": (
-            "`/patreon subscribe` — the two tiers and exactly what each one gets you.\n\n"
-            "`/patreon link` — connect a pledge you already have. Perks switch on by themselves.\n\n"
-            "`/patreon perks` — what's live for you right now, and what gear you haven't bought yet.\n\n"
-            "`/patreon status` / `/patreon unlink` — the raw tier the bot reads, and how to disconnect."
-        ),
-    },
-    {
-        "key": "invite",
-        "emoji": icon_emoji("web_shooters") or "➕",
-        "title": "Add the Bot",
-        "summary": "Bring him to your own server.",
-        "body": (
-            "`/invite` — the install link, as a button. Asks for no special permissions.\n\n"
-            "Your profile is per-person, not per-server: cash, gear and streak come with you."
-        ),
-    },
-    {
-        "key": "loop",
-        "emoji": "🔄",
-        "title": "The Loop, Start to Finish",
-        "summary": "The whole cycle in one line.",
-        "body": (
-            "`/lab brew` → `/patrol` → `/bugle submit` → `/bank deposit` → "
-            "`/apartment pay` + `/workbench repair`."
+            "Bugle and Tutoring pay.\n\n"
+            "-# PVP\n"
+            "`/shakedown @user` — try to steal a cut of another player's wallet. Can "
+            "backfire and cost you instead."
         ),
     },
 ]
@@ -229,16 +200,21 @@ class OverviewButton(discord.ui.Button):
 
 class HelpBrowserView(discord.ui.DesignerView):
     """Dropdown jumps straight to any topic instead of paging through them one by
-    one — at this many topics, Prev/Next would mean clicking through most of them
-    just to reach the one you want. (No count quoted on purpose: the old one said
-    12 and had already gone stale.) Discord caps a Select at 25 options, which is
-    the real ceiling on TOPICS."""
+    one — even at six topics, Prev/Next would mean clicking through most of them just
+    to reach the one you want. (No count quoted on purpose: the old docstring said 12
+    and had already gone stale twice.) Discord caps a Select at 25 options, which is
+    the hard ceiling on TOPICS; the practical one is much lower and lives in the
+    comment above TOPICS."""
 
     def __init__(self, author_id: int, timeout: float = 180, accent: int | None = None):
         super().__init__(timeout=timeout)
         self.author_id = author_id
         self.selected_key: str | None = None
         self.message: discord.Message | None = None
+        # Rebuilt by every _render(); on_timeout needs the *current* objects to exempt
+        # them, and the timeout can only fire after the last render, so this is always
+        # in step with what's on screen.
+        self._link_buttons: list[discord.ui.Button] = []
         # `accent` is passed explicitly by OpenGuideButton, which builds one of these from
         # inside a component callback where the ambient per-command context is already
         # gone. /help builds it in the command body, where reading that context works.
@@ -253,7 +229,12 @@ class HelpBrowserView(discord.ui.DesignerView):
 
     async def on_timeout(self) -> None:
         if self.children:
-            self.children[0].disable_all_items()
+            # exclusions= matters: Container.disable_all_items() sets disabled on anything
+            # that has the attribute, link buttons included, and Discord renders a
+            # disabled link button greyed out and unclickable. There's nothing to protect
+            # — a link has no callback that could fire against a dead view — so an expired
+            # menu that can no longer change pages should still get you to the two links.
+            self.children[0].disable_all_items(exclusions=self._link_buttons)
         if self.message is not None:
             try:
                 await self.message.edit(view=self)
@@ -277,6 +258,28 @@ class HelpBrowserView(discord.ui.DesignerView):
         container.add_section(discord.ui.TextDisplay(header_text), accessory=accessory)
         container.add_separator()
         container.add_row(TopicSelect(self))
+        container.add_separator()
+        container.add_text("\n".join(f"-# {line}" for line in FOOTER_LINES))
+        # Link buttons rather than two more dropdown entries: both are outbound links, so
+        # a topic page for either would be a paragraph whose only real content is a URL
+        # you then have to select and paste. As buttons they're one click from every page
+        # instead of two from one, and they stop competing for space with the gameplay
+        # reference. on_timeout exempts them — see the comment there.
+        self._link_buttons = [
+            discord.ui.Button(
+                label="Patreon Perks",
+                emoji=icon_emoji("arachnid") or "🕷️",
+                style=discord.ButtonStyle.link,
+                url=PATREON_PAGE_URL,
+            ),
+            discord.ui.Button(
+                label="Add to Your Server",
+                emoji=icon_emoji("web_shooters") or "➕",
+                style=discord.ButtonStyle.link,
+                url=BOT_INVITE_URL,
+            ),
+        ]
+        container.add_row(*self._link_buttons)
 
         self.add_item(container)
 

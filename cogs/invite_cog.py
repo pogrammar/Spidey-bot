@@ -11,28 +11,8 @@ from __future__ import annotations
 import discord
 from discord.ext import commands
 
+from utils.links import BOT_INVITE_URL
 from utils.v2_embeds import static_container
-
-# The live bot's application ID, hardcoded rather than built from self.bot.user.id.
-#
-# That's deliberate, and it's the two-bot split talking (see config.py): on a dev machine
-# local.env connects as the *tester* application, and a tester bot that hands out its own
-# invite link is inviting people to a work-in-progress build nobody should be playing on.
-# Whichever bot runs this command, the link points at the real one.
-#
-# permissions=0 asks for no permission bits at all, so the bot's role lands with none and
-# it inherits whatever @everyone can already do in a channel. That's the intended posture
-# — an install prompt with no scary checklist — and it's also why every send in this
-# project treats a refusal as normal (cogs/ads_cog.py swallows HTTPException for exactly
-# this case).
-#
-# Lives here rather than in a service because nothing else needs it yet. If the promo
-# rotation in services/ads_service.py ever grows an "invite the bot" destination, this
-# constant moves there and this module imports it — services must not import cogs.
-BOT_INVITE_URL = (
-    "https://discord.com/oauth2/authorize"
-    "?client_id=1536438986913095751&scope=bot%20applications.commands&permissions=0"
-)
 
 INVITE_INTRO = (
     "The whole game — daily cash, patrols that turn into real fights, and rent that "
