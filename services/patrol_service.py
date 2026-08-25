@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import InventoryItem, User
+from db.models import InventoryItem, Item, User
 from services.ally_service import (
     LOW_HAPPINESS_THRESHOLD,
     get_current_happiness,
@@ -15,7 +15,14 @@ from services.ally_service import (
 from services.economy import BOSS_LEVEL_INTERVAL, add_reputation, add_wallet, next_boss_gate_level
 from services.inventory_service import remove_item
 from services.loot_tables import LOOT_TABLES, rand_range, weighted_choice
-from services.patreon_service import TIER_RANK_ARACHNID, TIER_RANK_NONE, TIER_RANK_SYMBIOTE
+from services.patreon_service import (
+    GATED_ITEM_MIN_RANK,
+    TIER_RANK_ARACHNID,
+    TIER_RANK_NONE,
+    TIER_RANK_SYMBIOTE,
+    get_tier_rank,
+)
+from utils.icons import item_label
 
 PATROL_COOLDOWN_SECONDS = 30
 CAMERA_ITEM_KEY = "camera"
@@ -27,7 +34,8 @@ CAMERA_GOLD_ITEM_KEY = "camera_gold"
 CAMERA_FAMILY_KEYS = [CAMERA_ITEM_KEY, CAMERA_SILVER_ITEM_KEY, CAMERA_GOLD_ITEM_KEY]
 
 # Camera tiers (Patreon-exclusive past the base camera, gated per-key in
-# shop_service.GATED_ITEM_MIN_RANK) — break_chance_reduction multiplies down
+# patreon_service.GATED_ITEM_MIN_RANK, and re-checked at use time by
+# get_effective_camera) — break_chance_reduction multiplies down
 # the existing break-chance formula in battle_service.finalize_battle;
 # quality_bump_chance is an independent roll to bump the banked photo's quality up
 # one tier (bronze->silver->gold, capped at gold). Both bump chances (0.60 / 0.80) are
@@ -442,6 +450,89 @@ async def get_equipped_camera(session: AsyncSession, user_id: int) -> InventoryI
     if not rows:
         return None
     return max(rows, key=lambda r: CAMERA_FAMILY_KEYS.index(r.item_key))
+
+
+@dataclass
+class EffectiveCamera:
+    """Which camera is actually in play for a user, as one answer for every question
+    about it — the stats it shoots at, the emoji that represents it, and the name the
+    copy calls it. Deliberately one value rather than separate lookups for stats and
+    icon: two sources would drift, and a gold emoji over base-camera stats is worse
+    than either being wrong alone."""
+
+    row: InventoryItem | None
+    """The equipped camera row, or None if they don't have one equipped at all. This is
+    the physical camera — the thing with durability that can break."""
+
+    item_key: str
+    """Whose stats/icon/name apply. Always a real camera key even when `row` is None, so
+    a "you took a photo" surface always has something to render."""
+
+    tier_locked: bool
+    """True when they own a paid camera their subscription no longer clears, so `row`
+    and `item_key` disagree. The only reason to mention the downgrade in copy."""
+
+    name: str = "Camera"
+    """`Item.name` for `item_key`, read from the database rather than hardcoded so the
+    shop, the inventory and every photo line all call it the same thing. The default is
+    only a floor for the case where the row is missing from the items table entirely."""
+
+    @property
+    def label(self) -> str:
+        """Emoji-prefixed name, ready to drop into copy — the reason a card that mentions
+        a camera never has to hardcode "camera" and end up showing a beat-up 35mm to
+        somebody shooting on a $3,000 body."""
+        return item_label(self.item_key, self.name)
+
+
+async def get_effective_camera(session: AsyncSession, user_id: int) -> EffectiveCamera:
+    """The equipped camera, downgraded to the stock body if their Patreon tier no longer
+    clears it.
+
+    Silver and Gold are gated purchases (patreon_service.GATED_ITEM_MIN_RANK), and a perk
+    has to stop when the subscription stops — otherwise one month's pledge buys a
+    permanent camera upgrade. Both halves of that are covered by reading the live rank:
+    unlink_account deletes the row and a cancelled pledge clears the stored tier, so
+    get_tier_rank returns TIER_RANK_NONE either way.
+
+    Falls back to CAMERA_ITEM_KEY rather than to None, which matters: None means "no
+    camera at all" and would cost a lapsed subscriber the ability to take photos
+    entirely. They will usually own no base camera to fall back onto, since buying a
+    Silver or Gold *deletes* every lower-tier body (shop_service.install_tool). Losing
+    the *bonuses* is the revocation; losing photos outright would be a punishment, and
+    would make resubscribing feel like repairing damage rather than switching a perk
+    back on.
+
+    Note that the fallback is to base-camera **stats on the body they still own**, never
+    to some older row — which is why deleting the retired sibling costs nothing here. A
+    lapse leaves a Gold owner shooting the Gold body at stock numbers.
+
+    A tier lapse never deletes anything — a $3,000 body comes straight back the moment
+    they resubscribe."""
+    row = await get_equipped_camera(session, user_id)
+    item_key = CAMERA_ITEM_KEY
+    tier_locked = False
+
+    if row is not None:
+        min_rank = GATED_ITEM_MIN_RANK.get(row.item_key)
+        if min_rank is None:
+            item_key = row.item_key
+        else:
+            # Only reached for a Silver/Gold owner, so the base-camera majority never
+            # pays for this query.
+            tier_rank = await get_tier_rank(session, user_id)
+            if tier_rank >= min_rank:
+                item_key = row.item_key
+            else:
+                tier_locked = True
+
+    item = await session.get(Item, item_key)
+    return EffectiveCamera(
+        row=row,
+        item_key=item_key,
+        tier_locked=tier_locked,
+        name=item.name if item is not None else "Camera",
+    )
 
 
 def camera_tier_stats(item_key: str) -> dict:

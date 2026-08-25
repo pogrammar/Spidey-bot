@@ -8,9 +8,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import PendingPhoto, User
 from services.ally_service import earnings_penalty_multiplier
+from services.biomorphic_service import ACTIVITY_BUGLE, AmbientScavenge, roll_ambient_scavenge
 from services.economy import add_wallet
 from services.gadget_service import roll_gadget_effect
 from services.loot_tables import LOOT_TABLES, rand_float_range, rand_range
+from services.patreon_service import TIER_RANK_NONE
 
 BUGLE_COOLDOWN_SECONDS = 60
 
@@ -31,6 +33,9 @@ class BugleResult:
     jam_flavor: str | None = None
     jam_handled: bool = False
     jam_amount: int = 0
+    # Biomorphic Webbing's ambient pickup (Symbiote+). None both for non-subscribers and
+    # for a missed roll — see biomorphic_service.roll_ambient_scavenge.
+    scavenged: AmbientScavenge | None = None
 
 
 @dataclass
@@ -63,7 +68,9 @@ async def get_pending_summary(session: AsyncSession, user: User) -> PendingSumma
     return summary
 
 
-async def submit_photos(session: AsyncSession, user: User) -> BugleResult | None:
+async def submit_photos(
+    session: AsyncSession, user: User, tier_rank: int = TIER_RANK_NONE
+) -> BugleResult | None:
     """Sells every pending photo. Returns None if there's nothing to submit."""
     pending = await _fetch_pending(session, user)
 
@@ -102,4 +109,10 @@ async def submit_photos(session: AsyncSession, user: User) -> BugleResult | None
 
     await add_wallet(session, user, result.total_cash, reason="bugle:submit")
     await session.commit()
+
+    # After the commit, deliberately: a bonus pickup must never be able to roll back a
+    # submission whose photos have already been deleted and paid out.
+    result.scavenged = await roll_ambient_scavenge(
+        session, user.discord_id, tier_rank, ACTIVITY_BUGLE
+    )
     return result

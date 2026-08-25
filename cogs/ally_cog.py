@@ -6,12 +6,12 @@ from discord.ext import commands
 
 from db.base import async_session
 from services.ally_service import ALLY_NAMES, get_current_happiness, list_gift_items, visit_ally
+from services.biomorphic_service import scavenge_subtext
 from services.busy import get_busy, set_busy
 from services.cooldowns import format_remaining
 from services.economy import get_or_create_user
-from services.patreon_service import TIER_RANK_ARACHNID, get_tier_rank
+from services.patreon_service import TIER_RANK_ARACHNID, get_tier_rank, tier_badge
 from utils.embeds import error_embed
-from utils.icons import emoji
 from utils.v2_embeds import StaticView
 
 ALLY_CHOICES = [OptionChoice(name=name, value=key) for key, name in ALLY_NAMES.items()]
@@ -59,9 +59,13 @@ class AllyCog(commands.Cog):
 
         footer_lines = [random.choice(ALLY_FOOTERS)]
         if tier_rank >= TIER_RANK_ARACHNID:
-            arachnid = emoji("arachnid") or ""
+            # The viewer's OWN tier badge, not the tier the drawback originates from.
+            # Symbiote inherits this cost from Arachnid, and since the copy never names
+            # a tier (GAME_DESIGN.md §9) the badge is the only thing saying whose
+            # subscription is talking — an Arachnid badge here tells a Symbiote
+            # subscriber their happiness drain belongs to somebody else's tier.
             footer_lines.append(
-                f"{arachnid} They're holding onto Peter Parker harder than they used to — "
+                f"{tier_badge(tier_rank)} They're holding onto Peter Parker harder than they used to — "
                 f"and they're right to. Show up, or happiness slips faster than it used to.".strip()
             )
         view = StaticView("Who You're Neglecting", field_groups=field_groups, footer_lines=footer_lines)
@@ -85,7 +89,8 @@ class AllyCog(commands.Cog):
                 )
                 return
 
-            ok, message, result = await visit_ally(session, user, who, gift)
+            tier_rank = await get_tier_rank(session, user.discord_id)
+            ok, message, result = await visit_ally(session, user, who, gift, tier_rank)
             if not ok:
                 await ctx.respond(embed=error_embed(message))
                 return
@@ -107,7 +112,13 @@ class AllyCog(commands.Cog):
             fields.append((
                 "Gift Fatigue", "Too many gifts in a row — give it a visit with nothing next time.",
             ))
-        fields.append(("Time Spent", format_remaining(result.visit_seconds)))
+        # Biomorphic Webbing's pickup hangs off Time Spent rather than Happiness: the
+        # ally-visit flavor lines are all about the trip ("on the walk over"), and the
+        # webbing helping itself to a component has nothing to do with how the visit went.
+        time_value = format_remaining(result.visit_seconds)
+        if result.scavenged:
+            time_value += scavenge_subtext(result.scavenged, tier_rank)
+        fields.append(("Time Spent", time_value))
 
         view = StaticView(
             f"Visiting {name}",

@@ -44,7 +44,6 @@ EXTENSIONS = [
     "cogs.heartbeat_cog",
     "cogs.health_cog",
     "cogs.tunnel_cog",
-    "cogs.v2_demo_cog",  # TEMPORARY — remove once done comparing Components V2
 ]
 
 

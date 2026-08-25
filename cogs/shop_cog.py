@@ -7,11 +7,12 @@ from discord.ext import commands
 from db.base import async_session
 from db.models import Item
 from services.economy import get_or_create_user
-from services.patreon_service import TIER_RANK_SYMBIOTE
-from services.shop_service import GATED_ITEM_MIN_RANK, buy_item, list_shop_items
+from services.patreon_service import GATED_ITEM_MIN_RANK, tier_requirement_badges
+from services.shop_service import buy_item, list_shop_items
 from utils.embeds import error_embed
 from utils.icons import emoji, item_label
-from utils.v2_embeds import PaginatedView, StaticView, add_field_groups
+from utils.tier_accent import current_accent
+from utils.v2_embeds import PaginatedView, StaticView, add_field_groups, make_container
 
 # Section grouping for /shop browse. Keeps the dropdown small and scannable instead
 # of dumping every item — tools, gifts, and gadgets — into one long list. Name and
@@ -47,17 +48,23 @@ def _is_locked(item: Item, user_level: int) -> bool:
 
 
 def _patreon_branding(item: Item) -> str:
-    """Patreon-gated items (see shop_service.GATED_ITEM_MIN_RANK) are visible to
+    """Patreon-gated items (see patreon_service.GATED_ITEM_MIN_RANK) are visible to
     everyone, same as a reputation-locked gadget — this just marks which ones need a
-    subscription to actually buy, using the emoji of the tier that gates it and no
-    tier-name text, per the same attribution convention battle text uses. The badge
-    tracks the gate: a Symbiote-only item wears the Symbiote emoji, so nobody reads an
-    Arachnid badge and assumes an Arachnid pledge is enough."""
+    subscription to actually buy, using tier emoji and no tier-name text, per the same
+    attribution convention battle text uses.
+
+    A shop listing is a *catalog* entry, not attribution: it's read by every tier at
+    once, so it wears every badge that clears the gate rather than only the badge of the
+    tier that sets it. An Arachnid-gated item showing a lone Arachnid badge (which is
+    what this did until 2026-08-23) reads as "Arachnid only" to a Symbiote subscriber who
+    can in fact buy it. Symbiote-only items still show one badge, because only one tier
+    clears them — so the badge count itself distinguishes the two gates, and nobody reads
+    an Arachnid badge and assumes an Arachnid pledge is enough for a Gold camera."""
     min_rank = GATED_ITEM_MIN_RANK.get(item.key)
     if min_rank is None:
         return ""
-    e = emoji("symbiote" if min_rank >= TIER_RANK_SYMBIOTE else "arachnid")
-    return f"{e} Patreon exclusive" if e else "Patreon exclusive"
+    badges = tier_requirement_badges(min_rank)
+    return f"{badges} Patreon exclusive" if badges else "Patreon exclusive"
 
 
 def _item_field(item: Item, user_level: int) -> tuple[str, str]:
@@ -178,6 +185,9 @@ class ShopBrowseView(discord.ui.DesignerView):
         self.section_index = 0
         self.selected_key: str | None = None
         self.message: discord.Message | None = None
+        # Before _render below: the Buy/Prev/Next/select callbacks all re-render from
+        # their own task, where the ambient per-command accent is already gone.
+        self.accent = current_accent()
         self._render()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -203,7 +213,7 @@ class ShopBrowseView(discord.ui.DesignerView):
         name, icon_key, items = self.sections[self.section_index]
         item = self._selected_item(items)
 
-        container = discord.ui.Container()
+        container = make_container(self.accent)
         if item is not None:
             title = item_label(item.key, item.name)
         else:

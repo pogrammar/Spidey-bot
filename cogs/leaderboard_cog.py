@@ -7,6 +7,8 @@ from db.base import async_session
 from db.models import User
 from services.leaderboard_service import CATEGORIES, get_leaderboard, get_rank
 from utils.icons import thumbnail
+from utils.tier_accent import current_accent
+from utils.v2_embeds import make_container
 
 MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
 
@@ -74,6 +76,9 @@ class LeaderboardView(discord.ui.DesignerView):
         self.page = 0
         self.message: discord.Message | None = None
         self.files: list[discord.File] = []
+        # Captured once: _render runs again from the page/category callbacks, which are
+        # separate tasks where the ambient per-command accent is already gone.
+        self.accent = current_accent()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
@@ -99,7 +104,7 @@ class LeaderboardView(discord.ui.DesignerView):
         start = self.page * LEADERBOARD_PAGE_SIZE
         page_entries = entries[start : start + LEADERBOARD_PAGE_SIZE]
 
-        container = discord.ui.Container()
+        container = make_container(self.accent)
         header_text = (
             f"# Leaderboard\n{meta['emoji']} {meta['label']} — Top {len(entries)} "
             f"(Page {self.page + 1}/{total_pages})"

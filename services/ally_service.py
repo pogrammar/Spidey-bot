@@ -7,8 +7,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Ally, GiftUsage, Item, User
+from services.biomorphic_service import ACTIVITY_ALLY_VISIT, AmbientScavenge, roll_ambient_scavenge
 from services.inventory_service import remove_item
-from services.patreon_service import GROWTH_CHOICE_ALLIES, TIER_RANK_ARACHNID, get_growth_choice, get_tier_rank
+from services.patreon_service import (
+    GROWTH_CHOICE_ALLIES,
+    TIER_RANK_ARACHNID,
+    TIER_RANK_NONE,
+    get_growth_choice,
+    get_tier_rank,
+)
 from utils.icons import item_label
 
 ALLY_NAMES = {"aunt_may": "Aunt May", "mj": "MJ"}
@@ -83,6 +90,9 @@ class VisitResult:
     gift_name: str | None = None
     backfired: bool = False
     visit_seconds: int = 0
+    # Biomorphic Webbing's ambient pickup (Symbiote+). None both for non-subscribers and
+    # for a missed roll — see biomorphic_service.roll_ambient_scavenge.
+    scavenged: AmbientScavenge | None = None
 
 
 async def _get_or_create_ally(session: AsyncSession, user_id: int, ally_key: str) -> Ally:
@@ -171,7 +181,8 @@ async def list_gift_items(session: AsyncSession) -> list[Item]:
 
 
 async def visit_ally(
-    session: AsyncSession, user: User, ally_key: str, gift_key: str | None
+    session: AsyncSession, user: User, ally_key: str, gift_key: str | None,
+    tier_rank: int = TIER_RANK_NONE,
 ) -> tuple[bool, str, VisitResult | None]:
     if ally_key not in ALLY_NAMES:
         return False, "Never heard of them.", None
@@ -211,6 +222,12 @@ async def visit_ally(
 
     await session.commit()
 
+    # After the commit, deliberately: a bonus pickup must never be able to roll back a
+    # visit whose gift has already been consumed and happiness already banked.
+    scavenged = await roll_ambient_scavenge(
+        session, user.discord_id, tier_rank, ACTIVITY_ALLY_VISIT
+    )
+
     return (
         True,
         "",
@@ -221,5 +238,6 @@ async def visit_ally(
             gift_name=gift_name,
             backfired=backfired,
             visit_seconds=visit_seconds,
+            scavenged=scavenged,
         ),
     )

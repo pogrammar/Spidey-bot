@@ -4,9 +4,11 @@ import discord
 from discord.ext import commands
 
 from db.base import async_session
+from services.biomorphic_service import scavenge_subtext
 from services.busy import get_busy, set_busy
 from services.cooldowns import format_remaining, get_remaining_seconds, set_cooldown
 from services.economy import get_or_create_user
+from services.patreon_service import get_tier_rank
 from services.tutoring_service import TUTORING_LOCK_SECONDS, run_tutoring_session
 from utils.embeds import error_embed
 from utils.icons import emoji
@@ -49,14 +51,21 @@ class TutoringCog(commands.Cog):
                 )
                 return
 
-            result = await run_tutoring_session(session, user)
+            tier_rank = await get_tier_rank(session, user.discord_id)
+            result = await run_tutoring_session(session, user, tier_rank)
             await set_cooldown(session, user.discord_id, "tutoring", TUTORING_LOCK_SECONDS)
             await set_busy(session, user.discord_id, "tutoring", TUTORING_LOCK_SECONDS)
 
         cash_note = " (neglected ally penalty)" if result.ally_earnings_penalty else ""
         xp_note = " (thriving allies bonus)" if result.ally_xp_bonus else ""
+        # Biomorphic Webbing's pickup hangs off the Cash value as subtext rather than
+        # taking a field of its own, matching how patrol_cog attributes the same perk's
+        # cash share — it's part of what you walked away with, not separate income.
+        cash_value = f"+${result.cash:,}{cash_note}"
+        if result.scavenged:
+            cash_value += scavenge_subtext(result.scavenged, tier_rank)
         earnings_fields = [
-            ("Cash", f"+${result.cash:,}{cash_note}"),
+            ("Cash", cash_value),
             (f"{emoji('reputation') or ''} Reputation XP".strip(), f"+{result.xp}{xp_note}"),
         ]
         cost_fields = [

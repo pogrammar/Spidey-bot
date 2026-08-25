@@ -4,9 +4,12 @@ import discord
 from discord.ext import commands
 
 from db.base import async_session
+from services.biomorphic_service import scavenge_subtext
 from services.bugle_service import BUGLE_COOLDOWN_SECONDS, get_pending_summary, submit_photos
 from services.cooldowns import format_remaining, get_remaining_seconds, set_cooldown
 from services.economy import get_or_create_user
+from services.patreon_service import get_tier_rank
+from services.patrol_service import get_effective_camera
 from utils.embeds import error_embed
 from utils.v2_embeds import StaticView
 
@@ -29,6 +32,10 @@ class BugleCog(commands.Cog):
         async with async_session() as session:
             user = await get_or_create_user(session, ctx.author.id)
             summary = await get_pending_summary(session, user)
+            # Read inside the session so the card's icon is the body they actually shoot
+            # on. "Your Camera Roll" showing a beat-up 35mm to somebody with a Gold camera
+            # equipped was the most visible instance of the icon ignoring what they own.
+            camera = await get_effective_camera(session, user.discord_id)
 
         if not summary.breakdown:
             await ctx.respond(
@@ -46,7 +53,7 @@ class BugleCog(commands.Cog):
             description,
             field_groups=[("On Hand", quality_fields)],
             footer_lines=[random.choice(BUGLE_FOOTERS)],
-            icon_key="camera",
+            icon_key=camera.item_key,
         )
         await ctx.respond(view=view, files=view.files)
 
@@ -65,7 +72,8 @@ class BugleCog(commands.Cog):
                 )
                 return
 
-            result = await submit_photos(session, user)
+            tier_rank = await get_tier_rank(session, user.discord_id)
+            result = await submit_photos(session, user, tier_rank)
             if result is None:
                 await ctx.respond(
                     embed=error_embed("You don't have any photos to sell. Get out there and /patrol first.")
@@ -80,7 +88,13 @@ class BugleCog(commands.Cog):
             sign = "+" if result.jam_handled else "-"
             complications.append(("Close Call", f"{result.jam_flavor} ({sign}${result.jam_amount:,})"))
 
-        field_groups = [("Sale", [("Payout", f"${result.total_cash:,}"), ("Breakdown", breakdown)])]
+        # Subtext under the payout rather than its own field — same attribution shape the
+        # perk uses everywhere else (see patrol_cog._biomorphic_cash_line).
+        payout_value = f"${result.total_cash:,}"
+        if result.scavenged:
+            payout_value += scavenge_subtext(result.scavenged, tier_rank)
+
+        field_groups = [("Sale", [("Payout", payout_value), ("Breakdown", breakdown)])]
         if complications:
             field_groups.append(("Complications", complications))
 

@@ -6,6 +6,7 @@ from discord.ext import commands
 
 from db.base import async_session
 from services.economy import deposit, get_or_create_user, withdraw
+from services.patreon_service import locked_item_keys
 from utils.embeds import error_embed
 from utils.icons import emoji, item_label
 from utils.item_display import badge
@@ -81,7 +82,19 @@ class EconomyCog(commands.Cog):
                 item_def = await inv_item.awaitable_attrs.item
                 display_name = item_def.name if item_def is not None else inv_item.item_key
                 category = item_def.category if item_def is not None else "misc"
-                rows.append((inv_item.item_key, display_name, category, inv_item.quantity, inv_item.durability, inv_item.equipped))
+                rows.append(
+                    (
+                        inv_item.item_key,
+                        display_name,
+                        category,
+                        inv_item.quantity,
+                        inv_item.durability,
+                        inv_item.equipped,
+                        inv_item.upgrade_level,
+                    )
+                )
+
+            locked_keys = await locked_item_keys(session, user.discord_id, {r[0] for r in rows})
 
         if not rows:
             await ctx.respond(embed=error_embed("Your pockets are empty."))
@@ -95,25 +108,60 @@ class EconomyCog(commands.Cog):
             "collectible": "Collectibles",
             "gift": "Gifts",
         }
-        by_category: dict[str, list[tuple[str, str]]] = {}
-        for item_key, display_name, category, quantity, durability_val, equipped_val in rows:
+        # Rows that would render identically get folded into one line and their
+        # quantities summed. Gadget purchases are never merged in the database — each
+        # buy is its own quantity=1 row — so owning two spare Spider Bots printed two
+        # byte-identical bullets, and losing one to a break left a list that looked
+        # completely unchanged. The item's level and durability are part of the key, so
+        # copies that differ in any way a player can act on still get their own line.
+        by_category: dict[str, dict[tuple[str, str], int]] = {}
+        for item_key, display_name, category, quantity, durability_val, equipped_val, upgrade_level in rows:
             durability = f" ({durability_val} durability)" if durability_val is not None else ""
             name = f"{badge(item_key)}{item_label(item_key, display_name)}"
+            if upgrade_level:
+                name = f"{name} (Lv. {upgrade_level})"
             if category == "gadget":
-                grade = "Battle-Grade" if equipped_val else "Swinging-Grade"
-                name = f"{name} — {grade}"
+                # A slot, not a quality tier. This used to print "Battle-Grade" when
+                # equipped and "Swinging-Grade" when not, which invented an item grade
+                # that doesn't exist: Spider Bots are combat gear whether or not they're
+                # in a slot, so "Swinging-Grade" was describing the wrong thing entirely.
+                # Gadgets get the extra word (unlike other categories, which stay silent
+                # when unequipped) because there are only MAX_EQUIPPED_GADGETS slots, so
+                # which copies are live is the thing you opened this list to check.
+                name = f"{name} — {'Equipped' if equipped_val else 'Stowed'}"
             elif equipped_val:
                 name = f"{name} — Equipped"
-            by_category.setdefault(category, []).append((name, f"x{quantity}{durability}"))
+            if item_key in locked_keys:
+                # Owned, keeps its upgrades, does nothing. Marked on the line rather than
+                # left to look like working gear — this covers the paid cameras too, which
+                # have no /gadget status of their own to explain themselves on.
+                name = f"{name} — Inactive"
+            group = by_category.setdefault(category, {})
+            line_key = (name, durability)
+            group[line_key] = group.get(line_key, 0) + quantity
 
         ordered_categories = [c for c in category_order if c in by_category]
         ordered_categories += [c for c in by_category if c not in category_order]
-        field_groups = [(category_labels.get(c, c.title()), by_category[c]) for c in ordered_categories]
+        field_groups = [
+            (
+                category_labels.get(c, c.title()),
+                [(name, f"x{qty}{dur}") for (name, dur), qty in by_category[c].items()],
+            )
+            for c in ordered_categories
+        ]
+
+        footer_lines = []
+        if locked_keys:
+            footer_lines.append(
+                "Inactive gear is still yours and keeps its upgrades — the Patreon tier that "
+                "unlocked it just isn't active on your account. See /patreon status."
+            )
+        footer_lines.append(random.choice(INVENTORY_FOOTERS))
 
         view = StaticView(
             "Inventory",
             field_groups=field_groups,
-            footer_lines=[random.choice(INVENTORY_FOOTERS)],
+            footer_lines=footer_lines,
             icon_key="gear_category",
         )
         await ctx.respond(view=view, files=view.files)

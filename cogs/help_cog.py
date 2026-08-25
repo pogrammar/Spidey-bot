@@ -4,7 +4,8 @@ from discord.ext import commands
 from db.base import async_session
 from services.economy import get_or_create_user
 from utils.icons import emoji as icon_emoji, item_label
-from utils.v2_embeds import add_field_groups
+from utils.tier_accent import current_accent
+from utils.v2_embeds import add_field_groups, make_container
 
 # One topic per subject instead of several crammed onto one page — /help used to
 # bundle 3 unrelated subjects per "page" (Daily + Earning + Money all at once),
@@ -209,11 +210,15 @@ class HelpBrowserView(discord.ui.DesignerView):
     one — with 12 topics, Prev/Next would mean clicking through most of them just
     to reach the one you want."""
 
-    def __init__(self, author_id: int, timeout: float = 180):
+    def __init__(self, author_id: int, timeout: float = 180, accent: int | None = None):
         super().__init__(timeout=timeout)
         self.author_id = author_id
         self.selected_key: str | None = None
         self.message: discord.Message | None = None
+        # `accent` is passed explicitly by OpenGuideButton, which builds one of these from
+        # inside a component callback where the ambient per-command context is already
+        # gone. /help builds it in the command body, where reading that context works.
+        self.accent = accent if accent is not None else current_accent()
         self._render()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -238,7 +243,7 @@ class HelpBrowserView(discord.ui.DesignerView):
         self.clear_items()
         topic = self._topic()
 
-        container = discord.ui.Container()
+        container = make_container(self.accent)
         if topic is None:
             header_text = f"# {OVERVIEW_TITLE}\n{OVERVIEW_BODY}"
             accessory = discord.ui.Button(label="Menu", emoji="📖", style=discord.ButtonStyle.secondary, disabled=True)
@@ -254,13 +259,19 @@ class HelpBrowserView(discord.ui.DesignerView):
 
 class OpenGuideButton(discord.ui.Button):
     """Swaps the welcome message straight into the /help browser — a new player
-    shouldn't have to close this and type another command to get there."""
+    shouldn't have to close this and type another command to get there.
 
-    def __init__(self):
+    Carries the accent down from the StartView that owns it: the guide it builds is
+    constructed inside this callback, which is the one place in the project a V2 view is
+    born outside a command body and so the only one that can't resolve the accent from
+    ambient context."""
+
+    def __init__(self, accent: int | None = None):
         super().__init__(label="Open Full Guide", emoji="📖", style=discord.ButtonStyle.primary)
+        self.accent = accent
 
     async def callback(self, interaction: discord.Interaction):
-        guide = HelpBrowserView(author_id=interaction.user.id)
+        guide = HelpBrowserView(author_id=interaction.user.id, accent=self.accent)
         await interaction.response.edit_message(view=guide)
         guide.message = await interaction.original_response()
 
@@ -270,8 +281,9 @@ class StartView(discord.ui.DesignerView):
         super().__init__(timeout=timeout)
         self.author_id = author_id
         self.message: discord.Message | None = None
+        self.accent = current_accent()
 
-        container = discord.ui.Container()
+        container = make_container(self.accent)
         container.add_section(
             discord.ui.TextDisplay(
                 "# Friendly Neighborhood Orientation\n"
@@ -308,7 +320,7 @@ class StartView(discord.ui.DesignerView):
             ],
         )
         container.add_separator()
-        container.add_row(OpenGuideButton())
+        container.add_row(OpenGuideButton(self.accent))
         self.add_item(container)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:

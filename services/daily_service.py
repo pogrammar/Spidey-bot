@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.models import Item, User
 from services.cooldowns import format_remaining, get_remaining_seconds, set_cooldown
 from services.economy import add_reputation, add_wallet
-from services.gadget_service import MAX_UPGRADE_LEVEL, list_equipped_gadgets
+from services.gadget_service import MAX_UPGRADE_LEVEL, list_usable_gadgets
 from services.inventory_service import add_item
 from services.loot_tables import rand_range, weighted_choice
 from utils.icons import item_label
@@ -79,8 +79,12 @@ async def get_streak_status(session: AsyncSession, user: User) -> DailyStatus:
 
 async def _grant_free_gadget_upgrade(session: AsyncSession, user: User) -> str | None:
     """Bumps a random eligible equipped gadget up one level, no cash cost. Returns
-    its name, or None if nothing's equipped/eligible (caller decides the fallback)."""
-    equipped = await list_equipped_gadgets(session, user.discord_id)
+    its name, or None if nothing's equipped/eligible (caller decides the fallback).
+
+    Uses the *usable* list so a streak reward can't be spent upgrading a gadget the
+    player's lapsed subscription has switched off — the reward names the gadget it
+    upgraded, and naming an inert one reads as the reward having been wasted."""
+    equipped = await list_usable_gadgets(session, user.discord_id)
     eligible = [g for g in equipped if g.upgrade_level < MAX_UPGRADE_LEVEL]
     if not eligible:
         return None

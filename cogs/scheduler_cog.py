@@ -78,6 +78,21 @@ class SchedulerCog(commands.Cog):
                 ", link is dead — user must re-run /patreon link" if outcome.dead_link else "",
             )
 
+            if outcome.rank_delta > 0:
+                # Covers both halves of "linked first, subscribed after": a first pledge
+                # landing on a tier-less link, and an upgrade between tiers. Before this,
+                # a background re-check switched the perks on in silence — the only way to
+                # get the welcome was re-running /patreon link, which nobody has a reason
+                # to do after it already succeeded once.
+                #
+                # Dispatched through the bot's event bus instead of reaching into
+                # PatreonCog for _send_welcome: the welcome copy and the DM stay owned by
+                # the cog that owns everything else about them, and because dispatch
+                # schedules the listener as its own task, a closed-DM HTTPException in
+                # there cannot take this loop down with it. That matters more here than
+                # usual — see this method's docstring on tasks.loop dying permanently.
+                self.bot.dispatch("patreon_tier_upgraded", discord_id)
+
         log.info(
             "Patreon tick: %d checked, %d changed, %d unreachable",
             len(results), sum(1 for _, o in results if o.changed), len(unreachable),

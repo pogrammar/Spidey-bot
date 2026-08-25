@@ -8,29 +8,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import PendingPhoto, User
 from services.economy import add_reputation, add_wallet, next_boss_gate_level
-from services.gadget_service import list_equipped_gadgets, roll_gadget_effect, roll_gadget_wearout
+from services.gadget_service import roll_gadget_effect, roll_gadget_wearout
 from services.inventory_service import add_item
 from services.loot_tables import rand_range
-from services.patreon_service import TIER_RANK_ARACHNID, TIER_RANK_NONE, TIER_RANK_SYMBIOTE
+from services.patreon_service import (
+    GATED_ITEM_KEYS,
+    TIER_RANK_ARACHNID,
+    TIER_RANK_NONE,
+    TIER_RANK_SYMBIOTE,
+    tier_badge,
+)
 from services.patrol_service import (
     BIOMORPHIC_WEBBING_CASH_CHANCE,
     BIOMORPHIC_WEBBING_CASH_RANGE,
+    CAMERA_ITEM_KEY,
     CRIME_LEVEL_DECAY_RANGE_LOSS,
     CRIME_LEVEL_DECAY_RANGE_WIN,
     bump_photo_quality,
     camera_tier_stats,
-    get_equipped_camera,
+    get_effective_camera,
     roll_donation,
     roll_hazard,
 )
-# Combat reaching into the store looks odd, but this map is exactly "which items does a
-# subscription gate, and at what tier", which is the store's business and shouldn't be
-# duplicated here — a second copy would silently stop tagging the next gated gadget
-# someone adds. Only gadget keys are ever looked up against it (the camera tiers are in
-# the same map but never reach resolve_gadget), so membership is a safe proxy for "using
-# this is itself a perk", and the mapped rank picks which tier's badge to show.
-# See _gated_gadget_tag.
-from services.shop_service import GATED_ITEM_MIN_RANK
 from utils.icons import emoji
 from utils.leveling import xp_for_level
 
@@ -201,17 +200,20 @@ ENHANCED_STRENGTH_DAMAGE_BONUS = 0.3
 # copy promises "coins, photos, AND parts" — meant to feel like occasional small
 # extras, not a guaranteed bonus every fight. Cash chance/range live in
 # patrol_service.py since the same bonus also applies to non-combat patrols.
+#
+# These are three of FOUR rolls, not the whole perk. The fourth is the ambient scavenge
+# in services/biomorphic_service.py (added 2026-08-24), which fires during /tutoring,
+# /ally visit and /bugle submit — it lives in its own leaf module because patrol_service
+# imports ally_service, so ally_service can never import back through here.
 BIOMORPHIC_WEBBING_COMPONENT_CHANCE = 0.20  # only rolled if the normal drop_chance roll missed
 BIOMORPHIC_WEBBING_PHOTO_CHANCE = 0.20  # only rolled if a camera's equipped and a photo was already banked
 
-# Sonic Dampener (Symbiote drawback, not a perk) — scoped to just "the Shocker"
-# (see patrol_service.py's BOSS_ROSTER), the only one of the 20 named bosses that
-# thematically fits, since all 20 mechanically share one identical stat block —
-# no per-boss attack-type system exists to gate a broader "any sonic boss"
-# version. +30% mirrors Enhanced Resilience's -30% as the same-shape opposite,
-# a real cost for the tier rather than pure upside.
-SONIC_DAMPENER_BOSS_NAME = "the Shocker"
-SONIC_DAMPENER_DAMAGE_INCREASE = 0.3
+# Sonic Dampener was removed on 2026-08-24. It was a +30% incoming-damage penalty scoped
+# to a single boss out of twenty ("the Shocker"), which made it invisible to almost every
+# player almost all the time — and the tier's own cost is now the combat override below,
+# which fires on every kind of fight. Don't reintroduce a per-boss drawback: all 20 named
+# bosses share one identical stat block, so there's no attack-type system to hang a
+# thematically broader version on, which is exactly what made this one so narrow.
 
 # Venom Blast (Symbiote+ perk) — the counter-damage the absorbed hit is paid back as,
 # as a multiple of one ordinary Attack roll. 2x is what the player-facing copy promises
@@ -227,56 +229,169 @@ SONIC_DAMPENER_DAMAGE_INCREASE = 0.3
 # the entire reason it's a multiple of an attack roll instead of a flat figure.
 VENOM_BLAST_DAMAGE_MULTIPLIER = 2
 
-# The Symbiote tier's own always-on cost (GAME_DESIGN.md §9.3). Every other Symbiote
-# drawback is conditional — Sonic Dampener is one boss out of twenty, the ally-decay
-# penalty is inherited from Arachnid — so the top tier had nothing that cost it anything
-# on an ordinary patrol. This is that: some rounds the bond takes the wheel.
+# The suit integrity at or below which the Venom Blast button ARMS. Boss fights only.
 #
-# Scoped to Evade on purpose, and NOT to Attack or gadgets:
+# This used to be an interception threshold: the blast fired automatically when an incoming
+# hit would have left integrity here or lower. As of 2026-08-24 it is a player-deployed
+# button instead (cogs/patrol_cog.py VenomBlastButton, resolve_venom_blast below) — it sits
+# greyed out beside Evade reading "Not Charged" until integrity crosses this line, and then
+# the player chooses the round to spend it on. The owner asked for the deploy to be a
+# decision rather than a rescue, and this constant is what decides *when they get the
+# decision*, not what happens.
 #
-#   * Attack is already aggression. There's nothing for the suit to override, and a
-#     player who only ever attacks is already fighting the way it wants — so the perk
-#     that overrides restraint correctly never fires for them.
-#   * Gadgets are scarce, deliberately chosen, and carry durability, so silently
-#     swallowing one reads as a lost item rather than a lost impulse. The boss win-rate
-#     benchmark in ENEMY_STATS["boss"] also assumes proactive defensive gadget use, and
-#     overriding those would move that number without a cheap way to re-measure it
-#     (scratch/combat_sim.py is gadget-free — see its docstring for why).
+# The number is inherited from the automatic version's tuning, and it survived a re-measure
+# under the button. Swept over {0,15,25,35,50,65,80} at four seeds x 60k gadget-free boss
+# fights per cell (scratch/check_venom_trigger.py) with the harness pressing the round the
+# button arms. Greedy is a floor rather than an estimate — a human can hold it for a round
+# they expect to be worse, which is information the sim doesn't have:
 #
-# So the rule the copy can state honestly is: the suit overrides you when you try to
-# hold back. Measured at 0.10 (scratch/combat_sim.py override), against an
-# Evade->Attack policy, versus the identical fight with the override off:
+#   arming bar        0%     15%     25%     35%     50%     65%     80%
+#   b10 win        2.44%   9.79%  13.91%  17.35%  19.41%  19.76%  19.75%
+#   b1 arms         0.0%   14.6%   28.9%   44.4%   68.6%   86.4%   97.0%
+#   b10 median rd     -      5.0     4.0     4.0     3.0     3.0     3.0
+#   b10 on rd 1-2     -     0.0%    0.0%    2.3%   13.4%   23.3%   23.2%
 #
-#   boss bracket 1 / 5 / 10 / 20   -1.14% / -1.58% / -5.63% / -4.58% win rate
-#   crime bronze / silver / gold    -0.68..-0.99% / -1.14..-1.30% / -0.18..-0.73%
-#   visibility                     29.3% of boss fights, 24.8% of crime patrols
+# (b10 no-Patreon baseline under the same policy: 3.93%.)
 #
-# Negative everywhere, worst exactly where the stakes are highest, and seen in roughly
-# one fight in four. Higher rates were rejected: 0.15 costs -7.87% on a boss, which
-# drops a paying subscriber below the 70-75% win rate an unsubscribed player with a
-# fully-upgraded gadget kit gets, and a perk you pay for should never do that.
+# Two things changed shape when interception became arming. The U-shape the automatic version
+# showed is GONE — it was an artifact of the charge spending itself on whichever hit happened
+# to cross the line, and win rate now rises monotonically to about 50% and then flattens
+# (50->65 is +0.35% against a 3-sigma band of 0.41%: noise). And the optimum moved to 65%,
+# which the shipped 25% gives up 5.85 points of bracket-10 win rate to.
+#
+# Those 5.85 points are bought deliberately, and the bottom two rows are what buys them. At
+# 25% the button lights up on median round 4 of 10 and NEVER in the first two rounds, so it
+# reads as a late-fight decision. At 50% and above, a seventh to a quarter of fights hand it
+# over before the fight has a shape, which makes it a rotation piece: press it, then fight.
+# The owner asked for a decision rather than a rescue, and an opening move is neither.
+#
+# One more thing to know before touching this: the button is a much weaker perk than the
+# automatic version was, and no arming bar can buy that back. The old code returned damage=0
+# on the hit that would have taken integrity to the line — a once-per-fight death save. At the
+# same 25% bar it put bracket-10 win rate at 60.86%; the button puts it at 13.91%, against a
+# 3.93% unsubscribed floor. That comparison spans the override going 0.10 -> 0.30 as well, but
+# the override is the small term here: at bar 0%, where the button never arms, Symbiote wins
+# 2.44% against that same 3.93% floor, so 0.30 is costing about 1.5 points and the rest of the
+# gap is the mechanic. Closing it would take giving the press a defensive component, which is
+# a different mechanic, not a different number here.
+VENOM_BLAST_TRIGGER_INTEGRITY = 25
+
+# The Symbiote tier's own always-on cost (GAME_DESIGN.md §9.3). It is now the tier's ONLY
+# unconditional drawback — the Sonic Dampener that used to share the job was deleted on
+# 2026-08-24 (see its tombstone above), and the ally-decay penalty is inherited from
+# Arachnid rather than being Symbiote's own. So this one mechanic has to carry the whole
+# "the bond costs you something" side of the tier, which is why it is priced this carefully.
+#
+# Scoped to Evade and Gadget presses, and NOT to Attack. Attack is already aggression:
+# there's nothing for the suit to override, and a player who only ever attacks is already
+# fighting the way it wants — so the mechanic that overrides restraint correctly never
+# fires for them.
+#
+# Nor to the Venom Blast button (resolve_venom_blast, added 2026-08-24), for a different
+# reason: the blast IS the symbiote. A suit that hijacks its own signature move to throw a
+# punch instead is incoherent, and it would mean the one button a player had to survive down
+# to 25% integrity to unlock could be eaten 30% of the time. Don't "complete" the override's
+# coverage by adding it there.
+#
+# Gadgets were exempt until 2026-08-24, on the reasoning that they are scarce and carry
+# durability, so swallowing one "reads as a lost item rather than a lost impulse". That
+# objection was answered rather than overruled: the hijack lives at the very TOP of
+# resolve_gadget, above roll_gadget_effect and roll_gadget_wearout, so a hijacked press
+# costs you the round but never the gadget. You lose the effect and the tempo, not the gear.
+# Don't move that branch below either roll — billing durability for a button the suit
+# wouldn't let you press is exactly the thing that kept gadgets exempt for two years.
+#
+# Extending it there is also what makes this a real cost outside boss fights, which it
+# previously wasn't. In a crime patrol suit integrity is cosmetic (it only bills you for
+# repairs afterward), so losing an Evade's damage reduction costs almost nothing — but
+# losing a gadget's damage costs the same there as anywhere. At an unchanged 0.10 the crime
+# cost went from -0.51% to -2.36% purely from adding the gadget surface.
+#
+# The rate is 0.30, set by the owner on 2026-08-24 ("make it so that the suit overtakes 30%
+# of the time"). It was chosen against an estimate, and then re-measured — the measurement
+# came out roughly twice the estimate, so what's recorded below is the measurement.
+#
+# Full curve, bracket-10 boss, `scratch/combat_sim.py override`, 40k fights per cell against
+# the identical fight with the override off. Two policies because the gadget hijack landed
+# the same day and the two shapes price completely differently:
+#
+#   rate      evade only    +3 gadget presses    crime gold (gadget)
+#   0.05         -0.97%             -5.48%              -1.40%
+#   0.10         -2.16%            -10.59%              -2.36%
+#   0.15         -3.28%            -15.91%              -3.73%
+#   0.20         -4.64%            -20.16%              -4.87%
+#   0.30         -6.82%            -29.02%              -6.88%   <- shipped
+#
+# It is very nearly linear in the rate, at about -1% of boss win rate per point of override
+# under the gadget policy. Any future "let's try 0.25" can be read straight off that slope
+# instead of re-running the sweep.
+#
+# The -6.30%/-8.76% figures this comment used to quote for 0.15/0.20 are gone: they predate
+# both the gadget hijack and the manual Venom Blast press, and they don't correspond to
+# either column above. Don't resurrect them from git history.
+#
+# WHAT 0.30 COSTS, NET, AND THE BAR IT BREAKS. This file previously rejected 0.15 on the
+# rule that a paying subscriber must not win less often than an unsubscribed player with a
+# full gadget kit. `combat_sim.py package` says 0.30 breaks that rule in boss fights:
+#
+#   boss bracket    1        5        10       20
+#   no Patreon    99.99%   89.65%   40.56%   34.56%
+#   Symbiote      98.94%   77.80%   34.15%   31.21%
+#   delta         -1.05%  -11.86%   -6.41%   -3.35%     (bracket 1 is a ceiling artifact)
+#
+#   crime bronze / silver / gold:  +3.83% / +20.26% / +42.81%
+#
+# So the shipped tier is strongly net-positive in crime patrols and net-negative in boss
+# fights at brackets 5, 10 and 20. That is a deliberate, informed choice by the owner and
+# not a bug to quietly fix — but it IS the thing to check first if boss-fight complaints
+# ever arrive, and the number to move is this one. Every point of override is worth about
+# 1% of boss win rate; the tier goes net-positive at every bracket somewhere around 0.10,
+# which is what it shipped at for two years.
+#
+# WHERE THAT COST ACTUALLY LANDS: on gadget users, almost entirely. The table above prices
+# boss fights under a policy that presses three gadgets per fight, which is the shape the
+# hijack punishes hardest — a hijacked press forfeits an effect that would have negated the
+# counter outright, where a hijacked Evade forfeits only a damage reduction. Re-measured
+# gadget-free (scratch/check_venom_trigger.py, 240k fights per cell), the same tier at the
+# same rate is net POSITIVE almost everywhere:
+#
+#   boss bracket        1        5       10       20
+#   no Patreon      97.34%   26.32%    3.93%    2.37%
+#   Symbiote        97.05%   52.86%   13.91%   11.44%
+#   delta           -0.30%  +26.54%   +9.99%   +9.07%
+#
+# and the override's own cost at bracket 10 there is about 1.5 points, against 29 under the
+# gadget policy. Same rate, same resolvers — the difference is entirely what the player is
+# pressing. So "0.30 is net-negative in boss fights" is true of a gadget-heavy player and
+# false of everyone else. The bracket-1 -0.30% is the one real shortfall in this table rather
+# than a ceiling artifact: those fights are short enough that the button arms in only 28.9%
+# of them while the override is on for all of them.
+#
+# The practical consequence for anyone tuning this later: if boss complaints arrive, narrowing
+# the hijack back toward Evade-only is a smaller and better-targeted lever than dropping the
+# rate for everybody, because the rate is not where the asymmetry lives.
+#
+# Two caveats on the table, in opposite directions. combat_sim models gadget presses
+# synthetically with no fumble rate (see its docstring), which OVERSTATES the hijack's cost
+# — a real gadget sometimes fumbles into a plain attack anyway. And its Venom Blast policy
+# presses the button the round it arms, which UNDERSTATES the manual perk's value, since a
+# real player can save the charge for a round they expect to be lethal.
+#
+# Visibility at 0.30: a mean of 1.20 hijacks per bracket-10 boss fight, with at least one in
+# 78.8% of them — so only 21% of fights pass without the suit taking a round off the player.
+# At the old 0.10 that was 0.43 per fight and 37.2% of fights, i.e. nearly two thirds saw
+# nothing at all, which is the invisibility that started this whole change. These figures are
+# not approximations: it's the real constant rolled by the real resolvers.
 #
 # Two shapes were priced and rejected outright, both worth recording so they don't get
 # re-proposed. Making the override hit *harder* (a guaranteed 1.5x, borrowing the combo
 # constants) turns it into a straight buff at every rate (+3.16% boss, +10.41% crime at
 # 0.15) — the user asked for a cost, and that isn't one. Adding a suit tear on top of
-# that moves crime-tier win rate by exactly 0.00%, because suit integrity is cosmetic
-# inside a crime fight; it only bills you for repairs afterward. That's the structural
-# reason this is a plain attack: in crime patrols defense is worthless, so *any*
-# override toward aggression that also improves the swing is free-to-positive there.
-SYMBIOTE_OVERRIDE_CHANCE = 0.10
-
-
-def _is_sonic_dampener_boss(enemy_name: str | None) -> bool:
-    """Matches the Shocker on rematches too. patrol_service.boss_name() suffixes
-    repeat encounters with " (Round N)" once the 20-boss roster wraps, so the exact
-    equality this used until 2026-08-22 fired on bracket 4 and then never again —
-    "the Shocker (Round 2)" != "the Shocker". That made the Symbiote tier's ONLY
-    drawback a single encounter at reputation level 20 for every player alive, while
-    GAME_DESIGN claimed it recurred. Prefix-match so the suffix doesn't matter."""
-    if not enemy_name:
-        return False
-    return enemy_name == SONIC_DAMPENER_BOSS_NAME or enemy_name.startswith(f"{SONIC_DAMPENER_BOSS_NAME} (")
+# that moves crime-tier win rate by exactly 0.00%, for the same cosmetic-integrity reason
+# above. That's the structural reason this is a plain attack: in crime patrols defense is
+# worthless, so *any* override toward aggression that also improves the swing is
+# free-to-positive there.
+SYMBIOTE_OVERRIDE_CHANCE = 0.30
 
 # Round-by-round flavor — randomized per line so repeated battles don't read identical
 # every time. `{dmg}` / `{enemy}` get filled in where present.
@@ -427,7 +542,7 @@ class BattleState:
     broken_gadget_keys: set[str] = field(default_factory=set)
     gadgets_broken: list[str] = field(default_factory=list)  # names, for the final report
     combo_ready: bool = False  # set by a successful Evade, consumed by the next Attack
-    venom_blast_used: bool = False  # once-per-boss-fight — see _apply_counter_with_venom_blast
+    venom_blast_used: bool = False  # once-per-boss-fight charge — see resolve_venom_blast
     ended: bool = False
     end_reason: str | None = None  # "won" | "rounds_exhausted" | "timeout"
     log: list[str] = field(default_factory=list)
@@ -468,6 +583,12 @@ class BattleReport:
     biomorphic_photo: bool = False
     biomorphic_component: bool = False
     biomorphic_cash: int = 0
+    # Which camera actually took the shot (patrol_service.EffectiveCamera), so the result
+    # card can show the body they own instead of always drawing the beat-up 35mm. Resolved
+    # here rather than in the cog because it needs the session and the live tier check.
+    # Defaulted to the stock camera for the no-photo path, where nothing reads them.
+    camera_item_key: str = CAMERA_ITEM_KEY
+    camera_label: str = "Camera"
 
 
 def start_battle(
@@ -515,30 +636,42 @@ def start_battle(
     )
 
 
-def _arachnid_tag() -> str:
-    e = emoji("arachnid")
-    return f" {e}" if e else ""
+def _tier_tag(tier_rank: int) -> str:
+    """The badge that rides along on a paid perk (or a paid drawback) as it fires,
+    space-prefixed for appending to a line. Empty below Arachnid.
+
+    It's the *player's* tier, not the tier the perk originates from. The attribution
+    rule in GAME_DESIGN.md §9 is emoji-only — the tier's name never appears in battle
+    copy — so the badge is the entire signal for whose subscription is talking, and
+    showing an Arachnid badge to a Symbiote subscriber tells them their own perk
+    belongs to somebody else. Static catalogs (the shop) do the opposite and list
+    every badge that clears the gate; see tier_requirement_badges."""
+    badge = tier_badge(tier_rank)
+    return f" {badge}" if badge else ""
 
 
-def _symbiote_tag() -> str:
-    """Symbiote-tier counterpart to _arachnid_tag. Both exist because the attribution
-    rule in GAME_DESIGN.md §9 is emoji-only — the tier's *name* never appears in
-    battle copy, so the badge is the entire signal that a paid perk just fired."""
-    e = emoji("symbiote")
-    return f" {e}" if e else ""
+def _perk_glyph(icon_key: str) -> str:
+    """The perk's own glyph, space-suffixed so it can lead a line. Empty if that emoji
+    hasn't been uploaded — same "a miss renders without it, never an error" contract as
+    emoji() itself, so call sites interpolate it unguarded.
+
+    Pairs with _tier_tag, which trails. The glyph says *which perk* fired; the badge says
+    *whose subscription*. Until 2026-08-24 the badge did both jobs, which meant every
+    Symbiote perk announced itself with the same character and none of them said which
+    one it was — a Venom Blast and a bonus component carried byte-identical attribution.
+    The perk's name still isn't spelled out in battle copy; the prose already names it."""
+    glyph = emoji(icon_key)
+    return f"{glyph} " if glyph else ""
 
 
-def _gated_gadget_tag(gadget_key: str) -> str:
-    """Spider Bots and Electric Webbing are ordinary gadgets once owned — no tier
-    check runs at use time, and a lapsed subscriber keeps firing the ones they
-    bought. Owning them at all is the perk, though, so the badge rides along on
-    every use: that button existing is what the subscription paid for. The badge
-    tracks the rank the gate actually required, so a Symbiote-gated gadget would
-    carry the Symbiote emoji rather than silently borrowing Arachnid's."""
-    min_rank = GATED_ITEM_MIN_RANK.get(gadget_key)
-    if min_rank is None:
+def _gated_gadget_tag(gadget_key: str, tier_rank: int) -> str:
+    """Owning Spider Bots or Electric Webbing at all is the perk, so the badge rides
+    along on every use: that button existing is what the subscription paid for. And
+    the gate is live — list_usable_gadgets re-checks the tier at use time, so if this
+    tag renders, the pledge is current."""
+    if gadget_key not in GATED_ITEM_KEYS:
         return ""
-    return _symbiote_tag() if min_rank >= TIER_RANK_SYMBIOTE else _arachnid_tag()
+    return _tier_tag(tier_rank)
 
 
 def _enemy_counter(state: BattleState, incoming_multiplier: float = 1.0) -> int:
@@ -554,27 +687,33 @@ def _apply_counter(state: BattleState, dmg: int) -> None:
         state.hits_taken += 1
 
 
+# The blast's copy. Player-deployed as of 2026-08-24, which meant rewriting all three rather
+# than editing them: the old lines ("The symbiote surges up and swallows the hit whole") had
+# the bond reacting to an incoming blow, and that is no longer a sentence the player can
+# cause — the button is pressed on a round of their choosing, before the enemy rolls
+# anything. They also each carried a leading space, because they used to be appended to a hit
+# line at two of four call sites; there is one call site now and it owns the whole line.
+#
+# Every line has to state both halves of what the press bought, because nothing else in the
+# round reports them: {dmg} damage dealt, and no counter coming back. A line that mentions
+# only the damage reads as a hard attack, and the player never learns the blast was also
+# their defense that round.
 VENOM_BLAST_LINES = [
-    " The symbiote surges up and swallows the hit whole — you blast back twice as hard!",
-    " Venom Blast! The blow never lands — the counter alone does more damage than it would've taken.",
-    " The bond absorbs everything — and pays it back double.",
-]
-
-# Sonic Dampener (Symbiote drawback, this one boss only). The extra damage used to be
-# applied with no line printed at all, which reads as the boss being tuned unfairly
-# rather than as the tier's own stated cost. The tag is doing real work here: it's the
-# only thing telling the player where the spike came from.
-SONIC_DAMPENER_LINES = [
-    " The sonic emitters bite into the bond — that one tears deeper than it should have.",
-    " Sound cuts straight through the symbiote's guard and the blow lands uglier than it should.",
-    " The dampeners scream, the bond flinches, and you feel that hit properly.",
+    "You stop holding it back. The symbiote unloads for {dmg} damage, and nothing gets through to answer it.",
+    "Venom Blast! {dmg} damage tears out of the bond, and whatever they were winding up dies with it.",
+    "You let go of the leash — {dmg} damage, and they're in no condition to hit back.",
 ]
 
 # The override's copy (SYMBIOTE_OVERRIDE_CHANCE). Every line has to make the same thing
-# unmistakable: you pressed Dodge and you are about to read an attack. A player who
-# can't tell why the button did something else reads it as a bug, and this is a cost
+# unmistakable: you pressed a button and you are about to read an attack instead. A player
+# who can't tell why the button did something else reads it as a bug, and this is a cost
 # they're paying for a subscription — it has to be legible as a cost. The emoji tag is
 # appended at the call site, per the attribution rule in GAME_DESIGN.md §9.
+#
+# Two lists because the two hijacked actions read differently: an overridden Dodge is the
+# suit refusing to retreat, an overridden gadget is the suit refusing to let Peter solve
+# the problem with engineering. Using the Dodge lines for a gadget press ("you move to
+# break away") would describe something the player didn't do.
 SYMBIOTE_OVERRIDE_LINES = [
     "You move to break away — the suit doesn't. It drives you straight back in.",
     "You go to dodge. The bond has other plans, and the bond is faster.",
@@ -585,59 +724,83 @@ SYMBIOTE_OVERRIDE_LINES = [
     "Your feet are already moving before you agreed to any of this.",
     "You call for a dodge. The symbiote answers with a lunge.",
 ]
+SYMBIOTE_GADGET_OVERRIDE_LINES = [
+    "Your hand goes for the gadget. The suit doesn't see the point.",
+    "You reach for your kit and the bond closes your fist for you.",
+    "The symbiote has an opinion about tools, and it isn't a good one.",
+    "You line up the shot — the suit decides fists are faster.",
+    "Something under the suit vetoes the clever plan.",
+    "You go for the tech. The bond goes for them.",
+    "It doesn't want your gadget. It wants your hands.",
+    "The trigger never gets pulled — the suit's already moving.",
+]
 
 
-@dataclass
-class CounterOutcome:
-    """What the enemy's counter actually turned into, once the Symbiote tier has had
-    its say. Split into three pieces because they compose differently:
+def venom_blast_ready(state: BattleState, tier_rank: int = TIER_RANK_NONE) -> bool:
+    """Whether the Venom Blast button should be live this round.
 
-    - `damage` is the amount that really hit the suit, *after* Sonic Dampener. Callers
-      must format their damage readout from this, not from the pre-perk roll they
-      passed in — printing the raw roll understated a dampened hit.
-    - `venom_line` *replaces* the normal counter copy when set: the hit was negated
-      outright, so there's no damage left to report, only the blast.
-    - `dampener_note` is additive — the hit did land, harder than usual, and this
-      explains why on top of the ordinary damage readout.
+    Four conditions: Symbiote, a boss fight, the charge unspent, and suit integrity at or
+    below VENOM_BLAST_TRIGGER_INTEGRITY. The cog renders the button greyed out with a
+    "Not Charged" label whenever this is False rather than hiding it, so the player can
+    see the thing they're waiting for — a perk that only appears on the rounds it works is
+    a perk nobody knows they have.
+
+    Defaults to TIER_RANK_NONE so a caller that forgets to thread the rank gets a dead
+    button rather than a free perk, matching every other tier gate in this module.
     """
-
-    damage: int = 0
-    venom_line: str = ""
-    dampener_note: str = ""
-
-
-def _apply_counter_with_venom_blast(state: BattleState, dmg: int, tier_rank: int) -> CounterOutcome:
-    """Boss fights only, once per fight. Copy already promises "twice as hard" —
-    implementing that literally (2x a normal attack roll) rather than a flat
-    number keeps it self-scaling with difficulty instead of needing its own
-    separately-tuned constant that could drift out of sync with ATTACK_DAMAGE.
-
-    Also applies Sonic Dampener (Symbiote drawback) before the Venom Blast check,
-    so a dampened hit correctly factors into whether Venom Blast would even
-    trigger — a real cost, not just cosmetic extra damage after the fact."""
-    dampener_note = ""
-    if tier_rank >= TIER_RANK_SYMBIOTE and dmg > 0 and _is_sonic_dampener_boss(state.enemy_name):
-        dmg = round(dmg * (1 + SONIC_DAMPENER_DAMAGE_INCREASE))
-        dampener_note = random.choice(SONIC_DAMPENER_LINES) + _symbiote_tag()
-
-    would_deplete = (
-        state.outcome_key == "boss"
-        and dmg > 0
-        and (state.starting_suit_integrity - state.total_suit_damage - dmg) <= 0
+    return (
+        tier_rank >= TIER_RANK_SYMBIOTE
+        and state.outcome_key == "boss"
+        and not state.venom_blast_used
+        and state.suit_remaining <= VENOM_BLAST_TRIGGER_INTEGRITY
     )
-    if tier_rank >= TIER_RANK_SYMBIOTE and not state.venom_blast_used and would_deplete:
-        state.venom_blast_used = True
-        bonus = rand_range(state.attack_damage_range) * VENOM_BLAST_DAMAGE_MULTIPLIER
-        state.enemy_hp = max(0, state.enemy_hp - bonus)
-        # The dampener note is deliberately dropped on this path: Venom Blast negates
-        # the hit entirely, so there's no extra damage left to explain, and printing
-        # "that hit landed harder" next to "the blow never lands" would contradict
-        # itself. The dampener still counted — it's what pushed the hit lethal enough
-        # to trigger the blast in the first place.
-        return CounterOutcome(damage=0, venom_line=random.choice(VENOM_BLAST_LINES) + _symbiote_tag())
 
-    _apply_counter(state, dmg)
-    return CounterOutcome(damage=dmg, dampener_note=dampener_note)
+
+def resolve_venom_blast(state: BattleState, tier_rank: int = TIER_RANK_NONE) -> str:
+    """Spend the charge. Returns the round's log line, or "" if the blast wasn't armed.
+
+    Until 2026-08-24 the blast fired itself, from inside the counter-damage path: a helper
+    called _apply_counter_with_venom_blast intercepted the incoming hit and returned a line
+    that *replaced* the counter's, which is why a CounterOutcome dataclass existed at all.
+    All of that is gone. The owner asked for a button the player deploys, which changes the
+    perk from something that happens to you into a decision, and changes the timing from
+    "whichever hit happened to cross the line" to "the round you judged worst".
+
+    What a press does, and why each half:
+
+    - Damage is 2x a normal attack roll and is **not** checked against ATTACK_HIT_CHANCE.
+      A once-per-fight charge the player had to survive down to 25% integrity to unlock
+      cannot then whiff — that would be the worst button press in the game. Multiplying a
+      live attack roll instead of using a flat number keeps it scaling with difficulty for
+      free; see VENOM_BLAST_DAMAGE_MULTIPLIER, which is copy-bound to "twice as hard".
+    - No counter is rolled at all, the same shape as the group_defense and shock_burst
+      gadget effects. This half is inherited from the automatic version, where negating one
+      incoming hit *was* the perk, and it's what makes pressing this at low integrity safe
+      rather than a gamble — at 25% or less, a round that could take a hit might be the
+      last one you get.
+    - combo_ready is left untouched. A combo banked by an earlier Evade survives the blast
+      and is still waiting for the next Attack; the blast neither spends nor grants one.
+
+    The Symbiote override deliberately does **not** get a shot at this press, unlike Evade
+    and gadgets. The blast is the symbiote — a suit that hijacks its own signature move to
+    throw a punch instead is incoherent, and the override exists to punish hesitation, which
+    is the opposite of what this button is.
+
+    The empty-string return is for a stale press: a disabled button can still be clicked if
+    an earlier round's edit is in flight, and the cog turns "" into an ephemeral refusal
+    rather than burning a round on nothing.
+    """
+    if not venom_blast_ready(state, tier_rank):
+        return ""
+
+    state.venom_blast_used = True
+    dmg = rand_range(state.attack_damage_range) * VENOM_BLAST_DAMAGE_MULTIPLIER
+    state.enemy_hp = max(0, state.enemy_hp - dmg)
+    return (
+        f"{_perk_glyph('venom_blast')}"
+        f"{random.choice(VENOM_BLAST_LINES).format(dmg=dmg)}"
+        f"{_tier_tag(tier_rank)}"
+    )
 
 
 def resolve_attack(state: BattleState, tier_rank: int = TIER_RANK_NONE) -> str:
@@ -660,7 +823,7 @@ def resolve_attack(state: BattleState, tier_rank: int = TIER_RANK_NONE) -> str:
         template = random.choice(COMBO_HIT_LINES if comboed else ATTACK_HIT_LINES)
         hit_line = template.format(dmg=dmg)
         if strength_active:
-            hit_line += " (Enhanced Strength)" + _arachnid_tag()
+            hit_line += " (Enhanced Strength)" + _tier_tag(tier_rank)
     else:
         hit_line = random.choice(ATTACK_MISS_LINES)
 
@@ -668,38 +831,35 @@ def resolve_attack(state: BattleState, tier_rank: int = TIER_RANK_NONE) -> str:
         return hit_line
 
     counter = _enemy_counter(state)
-    outcome = _apply_counter_with_venom_blast(state, counter, tier_rank)
-    if outcome.venom_line:
-        return hit_line + outcome.venom_line
+    _apply_counter(state, counter)
     enemy = state.enemy_name.capitalize()
-    if outcome.damage:
-        counter_line = random.choice(ENEMY_HIT_LINES).format(enemy=enemy, dmg=outcome.damage)
+    if counter:
+        counter_line = random.choice(ENEMY_HIT_LINES).format(enemy=enemy, dmg=counter)
     else:
         counter_line = random.choice(ENEMY_WHIFF_LINES).format(enemy=enemy)
-    return hit_line + counter_line + outcome.dampener_note
+    return hit_line + counter_line
 
 
 def resolve_evade(state: BattleState, tier_rank: int = TIER_RANK_NONE) -> str:
     # Symbiote's always-on cost, resolved before anything else so the forfeited Evade is
     # total: no damage reduction on the incoming counter, and — because combo_ready is
     # set below rather than here — no combo banked for next round either. Delegating to
-    # resolve_attack rather than duplicating it keeps Enhanced Strength, Venom Blast and
-    # the Sonic Dampener all applying normally to the round the suit stole.
+    # resolve_attack rather than duplicating it keeps Enhanced Strength applying normally
+    # to the round the suit stole. (Venom Blast used to ride along here too; it's a button
+    # now, and a hijacked Evade can't press it for you.)
     #
     # It does still *consume* a combo banked by a previous Evade, which is the one way
     # this cuts in the player's favour: the suit cashes in an opening you were about to
     # waste by dodging again. Deliberate, and already priced into the measured cost.
     if tier_rank >= TIER_RANK_SYMBIOTE and random.random() < SYMBIOTE_OVERRIDE_CHANCE:
-        override_line = random.choice(SYMBIOTE_OVERRIDE_LINES) + _symbiote_tag()
+        override_line = random.choice(SYMBIOTE_OVERRIDE_LINES) + _tier_tag(tier_rank)
         return f"{override_line} {resolve_attack(state, tier_rank)}"
 
     state.combo_ready = True
     counter = _enemy_counter(state, EVADE_DAMAGE_MULTIPLIER)
-    outcome = _apply_counter_with_venom_blast(state, counter, tier_rank)
-    if outcome.venom_line:
-        return outcome.venom_line
-    if outcome.damage:
-        base = random.choice(EVADE_GRAZE_LINES).format(dmg=outcome.damage) + outcome.dampener_note
+    _apply_counter(state, counter)
+    if counter:
+        base = random.choice(EVADE_GRAZE_LINES).format(dmg=counter)
     else:
         base = random.choice(EVADE_CLEAN_LINES)
     return f"{base} {random.choice(COMBO_SETUP_LINES)}"
@@ -708,6 +868,16 @@ def resolve_evade(state: BattleState, tier_rank: int = TIER_RANK_NONE) -> str:
 async def resolve_gadget(
     session: AsyncSession, user_id: int, state: BattleState, gadget_key: str, tier_rank: int = TIER_RANK_NONE
 ) -> str:
+    # The override gets first refusal on a gadget press, and it gets it *here* — above
+    # roll_gadget_effect and roll_gadget_wearout — so a hijacked press costs you the
+    # round but never the gadget. That placement is the whole design: the objection that
+    # kept gadgets exempt until 2026-08-24 was that swallowing one "reads as a lost item
+    # rather than a lost impulse", and billing durability for a button the suit wouldn't
+    # let you press is exactly that. You lose the effect and the tempo, not the gear.
+    if tier_rank >= TIER_RANK_SYMBIOTE and random.random() < SYMBIOTE_OVERRIDE_CHANCE:
+        override_line = random.choice(SYMBIOTE_GADGET_OVERRIDE_LINES) + _tier_tag(tier_rank)
+        return f"{override_line} {resolve_attack(state, tier_rank)}"
+
     all_owned = state.outcome_key == "boss"
     effect = await roll_gadget_effect(session, user_id, gadget_key, all_owned=all_owned)
     broken = await roll_gadget_wearout(session, user_id, state.difficulty, gadget_key, all_owned=all_owned)
@@ -730,23 +900,19 @@ async def resolve_gadget(
 
         if state.enemy_hp > 0:
             counter = _enemy_counter(state)
-            outcome = _apply_counter_with_venom_blast(state, counter, tier_rank)
-            if outcome.venom_line:
-                line += outcome.venom_line
+            _apply_counter(state, counter)
+            enemy = state.enemy_name.capitalize()
+            if counter:
+                line += random.choice(ENEMY_HIT_LINES).format(enemy=enemy, dmg=counter)
             else:
-                enemy = state.enemy_name.capitalize()
-                if outcome.damage:
-                    line += random.choice(ENEMY_HIT_LINES).format(enemy=enemy, dmg=outcome.damage)
-                else:
-                    line += random.choice(ENEMY_WHIFF_LINES).format(enemy=enemy)
-                line += outcome.dampener_note
+                line += random.choice(ENEMY_WHIFF_LINES).format(enemy=enemy)
 
         if broken:
             line += f" Worse, your {broken} gives out."
         return line
 
     dmg_range = state.attack_damage_range
-    lines = [f"{effect.gadget_name}!{_gated_gadget_tag(gadget_key)}"]
+    lines = [f"{effect.gadget_name}!{_gated_gadget_tag(gadget_key, tier_rank)}"]
 
     if effect.kind == "negate_damage":
         lines.append("You block the hit entirely — no damage taken.")
@@ -791,12 +957,10 @@ async def resolve_gadget(
 
         if state.enemy_hp > 0:
             counter = _enemy_counter(state)
-            outcome = _apply_counter_with_venom_blast(state, counter, tier_rank)
-            if outcome.venom_line:
-                lines.append(outcome.venom_line)
-            elif outcome.damage:
+            _apply_counter(state, counter)
+            if counter:
                 lines.append(
-                    f"{state.enemy_name.capitalize()} hits back, -{outcome.damage}% suit.{outcome.dampener_note}"
+                    f"{state.enemy_name.capitalize()} hits back, -{counter}% suit."
                 )
 
     if broken:
@@ -830,9 +994,17 @@ async def finalize_battle(
     photo_quality_bumped = False
     photo_quality_before_bump = None
     biomorphic_photo = False
-    camera = await get_equipped_camera(session, user.discord_id)
+    # Effective, not equipped: a Silver/Gold body whose pledge has lapsed keeps taking
+    # photos at base-camera stats rather than none at all. Note that it stays breakable,
+    # and at the base body's rate, because camera_tier_stats() of the fallback key has no
+    # break_chance_reduction. A demoted camera is still earning photos, so it carries the
+    # risk that comes with that — unlike a tier-locked gadget, which does nothing and so
+    # can't break (see list_usable_gadgets). Making it invulnerable while locked would
+    # turn lapsing into its own perk.
+    effective_camera = await get_effective_camera(session, user.discord_id)
+    camera = effective_camera.row
     if camera is not None:
-        tier_stats = camera_tier_stats(camera.item_key)
+        tier_stats = camera_tier_stats(effective_camera.item_key)
         banked_photo_quality = stats["photo_quality"]
         if random.random() < tier_stats["quality_bump_chance"]:
             bumped = bump_photo_quality(banked_photo_quality)
@@ -954,4 +1126,6 @@ async def finalize_battle(
         biomorphic_photo=biomorphic_photo,
         biomorphic_component=biomorphic_component,
         biomorphic_cash=biomorphic_cash,
+        camera_item_key=effective_camera.item_key,
+        camera_label=effective_camera.label,
     )

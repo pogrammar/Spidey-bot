@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import InventoryItem, Item, User
 from services.economy import add_wallet
+from services.patreon_service import locked_item_keys
 from utils.icons import item_label
 
 GADGET_CATEGORY = "gadget"
@@ -37,7 +38,9 @@ GADGET_EFFECTS: dict[str, dict] = {
     "ricochet_web": {"kind": "scavenge_boost", "base_chance": 0.44, "bonus_per_level": 0.14, "magnitude": 0.25},
     "upshot": {"kind": "bonus_xp", "base_chance": 0.30, "bonus_per_level": 0.145, "magnitude": 0.5},
     "concussion_burst": {"kind": "group_defense", "base_chance": 0.38, "bonus_per_level": 0.19, "magnitude": 0.5},
-    # Arachnid+ Patreon-exclusive (purchase gated in shop_service.GATED_ITEM_MIN_RANK)
+    # Arachnid+ Patreon-exclusive (gated per-key in patreon_service.GATED_ITEM_MIN_RANK,
+    # enforced both at purchase and, since 2026-08-23, at use time via
+    # list_usable_gadgets)
     # — mechanically just regular gadgets otherwise, same Select/button flow as the five above.
     #
     # Both were 0.20/0.12 until 2026-08-22, which made them the least reliable gadgets
@@ -77,6 +80,11 @@ class OwnedGadgetView:
     durability: int | None
     equipped: bool
     upgrade_level: int
+    tier_locked: bool = False
+    """Owned, and possibly still equipped, but switched off because the Patreon tier that
+    unlocked it has lapsed (see list_usable_gadgets). Worth surfacing rather than hiding:
+    a gadget that silently never fires reads as a bug, and the player needs somewhere that
+    says why so they can free the slot or resubscribe."""
 
 
 async def list_all_gadgets(session: AsyncSession) -> list[Item]:
@@ -93,6 +101,7 @@ async def list_owned_gadget_views(session: AsyncSession, user_id: int) -> list[O
         .order_by(InventoryItem.item_key, InventoryItem.durability.desc())
     )
     rows = (await session.execute(stmt)).all()
+    locked = await locked_item_keys(session, user_id, {inv.item_key for inv, _ in rows})
     return [
         OwnedGadgetView(
             item_key=inv.item_key,
@@ -100,6 +109,7 @@ async def list_owned_gadget_views(session: AsyncSession, user_id: int) -> list[O
             durability=inv.durability,
             equipped=inv.equipped,
             upgrade_level=inv.upgrade_level,
+            tier_locked=inv.item_key in locked,
         )
         for inv, name in rows
     ]
@@ -136,6 +146,39 @@ async def list_all_owned_gadgets(session: AsyncSession, user_id: int) -> list[In
     for row in rows:
         best.setdefault(row.item_key, row)
     return list(best.values())
+
+
+async def list_usable_gadgets(
+    session: AsyncSession, user_id: int, all_owned: bool = False
+) -> list[InventoryItem]:
+    """The gadgets that may actually *fire* for this user right now.
+
+    Every context that uses a gadget should come through here rather than calling
+    list_equipped_gadgets/list_all_owned_gadgets directly — those two report what's
+    equipped and owned, and have to stay honest about it, because equip_gadget counts
+    them against MAX_EQUIPPED_GADGETS.
+
+    Ownership isn't enough for the Patreon-gated ones (GATED_ITEM_MIN_RANK). A gated
+    gadget whose pledge has lapsed stays owned, equipped and listed — it just stops
+    doing anything. Inert rather than deleted, for two reasons: resubscribing switches
+    it straight back on instead of asking someone to re-buy gear they already paid real
+    money for, and the equip slots stay stable. Hiding it from list_equipped_gadgets
+    would free a slot, let them equip a third gadget, and hand them three live gadgets
+    the moment they resubscribed.
+
+    The live tier is what's read, never anything stored at purchase time, and that's
+    what makes one check cover both halves of revocation: a cancelled pledge clears the
+    stored tier (refresh_stale_links) and unlink_account deletes the row outright, so
+    get_tier_rank returns TIER_RANK_NONE either way.
+    """
+    rows = await (
+        list_all_owned_gadgets(session, user_id) if all_owned
+        else list_equipped_gadgets(session, user_id)
+    )
+    locked = await locked_item_keys(session, user_id, {row.item_key for row in rows})
+    if not locked:
+        return rows
+    return [row for row in rows if row.item_key not in locked]
 
 
 async def _owned_copies(session: AsyncSession, user_id: int, gadget_key: str) -> list[InventoryItem]:
@@ -199,6 +242,17 @@ async def upgrade_gadget(session: AsyncSession, user: User, gadget_key: str) -> 
     if match.upgrade_level >= MAX_UPGRADE_LEVEL:
         return False, "That gadget's already fully upgraded."
 
+    # Checked here rather than by swapping the list above for list_usable_gadgets, so this
+    # can say what's actually wrong. Filtering it out would reuse "that gadget isn't
+    # equipped" for a gadget sitting visibly in a slot, and this is a *spend* — charging
+    # real cash to upgrade something that can't fire is the worst version of the bug.
+    if await locked_item_keys(session, user.discord_id, {gadget_key}):
+        return False, (
+            "That gadget's inactive — the Patreon tier that unlocked it isn't active on "
+            "your account any more. It's still yours, and it starts working again the "
+            "moment the pledge is back. See /patreon status."
+        )
+
     item = await session.get(Item, match.item_key)
     next_level = match.upgrade_level + 1
     cost = round(item.price * UPGRADE_COST_MULTIPLIER * next_level)
@@ -220,7 +274,7 @@ async def roll_gadget_effect(
     equipped. Returns None if nothing's equipped, the requested one isn't equipped,
     or the roll simply didn't hit. all_owned=True (boss fights only) searches every
     owned gadget instead of just the 2 equipped ones."""
-    equipped = await (list_all_owned_gadgets(session, user_id) if all_owned else list_equipped_gadgets(session, user_id))
+    equipped = await list_usable_gadgets(session, user_id, all_owned=all_owned)
     if not equipped:
         return None
 
@@ -260,8 +314,12 @@ async def roll_gadget_wearout(
     """Chance for a gadget to break. Pass gadget_key for the one just used in battle;
     leave None for passive contexts, which pick randomly among whatever's equipped.
     Returns the gadget's name if it broke, else None. all_owned=True (boss fights
-    only) searches every owned gadget instead of just the 2 equipped ones."""
-    equipped = await (list_all_owned_gadgets(session, user_id) if all_owned else list_equipped_gadgets(session, user_id))
+    only) searches every owned gadget instead of just the 2 equipped ones.
+
+    Goes through list_usable_gadgets, so a tier-locked gadget can't break — it isn't
+    doing anything, and losing it while it's switched off would make lapsing destroy
+    gear rather than just pause it."""
+    equipped = await list_usable_gadgets(session, user_id, all_owned=all_owned)
     if not equipped:
         return None
 
@@ -278,6 +336,15 @@ async def roll_gadget_wearout(
         return None
 
     item = await session.get(Item, target.item_key)
-    await session.delete(target)
+    name = item_label(item.key, item.name) if item else target.item_key
+    if target.quantity > 1:
+        # One copy broke, not the stack. Deleting the row here destroyed every copy at
+        # once — a quantity=3 row went to zero on a single break. shop_service never
+        # stacks gadget purchases (each buy is its own quantity=1 row), so a stacked
+        # gadget only arrives via an /admin grant or seeded data, which is exactly the
+        # case where nobody would notice the loss and blame the right thing.
+        target.quantity -= 1
+    else:
+        await session.delete(target)
     await session.commit()
-    return item_label(item.key, item.name) if item else target.item_key
+    return name

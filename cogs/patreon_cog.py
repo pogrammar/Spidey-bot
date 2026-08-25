@@ -7,7 +7,10 @@ from sqlalchemy import select
 
 from db.base import async_session
 from db.models import InventoryItem, PatreonLink
+from services.battle_service import VENOM_BLAST_TRIGGER_INTEGRITY
 from services.patreon_service import (
+    GATED_ITEM_KEYS,
+    GATED_ITEM_MIN_RANK,
     TIER_RANK_ARACHNID,
     TIER_RANK_LABELS,
     TIER_RANK_NONE,
@@ -16,10 +19,14 @@ from services.patreon_service import (
     build_authorize_url,
     get_tier_rank,
     handle_callback,
+    tier_badge,
     tier_rank_from_name,
     unlink_account,
 )
-from services.shop_service import GATED_ITEM_KEYS, GATED_ITEM_MIN_RANK
+from services.shakedown_service import (
+    STEALTH_MODE_INACTIVITY_THRESHOLD_SECONDS,
+    count_stealth_protections,
+)
 from utils import webapp
 from utils.icons import emoji, item_label
 from utils.v2_embeds import StaticView
@@ -45,6 +52,23 @@ from utils.v2_embeds import StaticView
 # prefixes so each surface can frame them itself: the welcome gives the cost its own
 # section instead of burying it as the last bullet of the good news.
 
+
+def _glyph(key: str, line: str) -> str:
+    """Prefix a perk line with that perk's own custom emoji, if it's been uploaded.
+
+    Deliberately NOT tier attribution — the tier badge lives on the section header
+    (see _perk_sections) and GAME_DESIGN §9 requires it to appear exactly once. This
+    glyph says *which perk*, the badge says *whose subscription*. Same "a miss renders
+    without it, never an error" contract as everything else in utils.icons, so an
+    un-uploaded emoji degrades to the bare line.
+
+    Defined up here rather than beside _bullets because the perk lists below are built
+    at import time and would NameError on a forward reference.
+    """
+    e = emoji(key)
+    return f"{e} {line}" if e else line
+
+
 # The webbing perk is ONE perk with two grades, not two perks. Biomorphic Webbing is
 # what Organic Webbing grows into — it does everything Organic does (no vials, no
 # no-fluid cash tax) and adds bonus rolls on top, and Organic is its prerequisite,
@@ -62,14 +86,30 @@ from utils.v2_embeds import StaticView
 # needs a camera equipped. Promising all three flatly (which this did until 2026-08-22)
 # tells a subscriber who mostly runs quiet patrols to expect two rolls that can never
 # happen for them.
-ORGANIC_WEBBING_LINE = (
-    "Organic Webbing — patrols never touch web-fluid vials or the no-fluid cash tax."
+#
+# As of 2026-08-24 there's a fourth roll, and it's the one that finally makes this perk
+# distinguishable from plain Organic Webbing while you're NOT patrolling: the ambient
+# scavenge (biomorphic_service.AMBIENT_SCAVENGE_CHANCE, raised to 0.30 on 2026-08-25) on
+# /tutoring, /ally visit and /bugle submit. Named as "wherever else you go" rather than
+# listing the three commands because the list would go stale the moment a fourth activity is
+# wired up, and the flavor line on the pickup itself always says where it happened.
+#
+# NOTE FOR THE NEXT RATE CHANGE: this line quotes no percentages at all, deliberately, so
+# none of the four numbers above can go stale in player-facing copy the way Venom Blast's
+# threshold did. The rates in the comments here are documentation and DO need updating —
+# the 0.20 → 0.30 move only touched this block. Keep it that way: if a rate ever earns a
+# mention in the copy, interpolate the constant rather than typing the number.
+ORGANIC_WEBBING_LINE = _glyph(
+    "organic_webbing",
+    "Organic Webbing — patrols never touch web-fluid vials or the no-fluid cash tax.",
 )
-BIOMORPHIC_WEBBING_LINE = (
+BIOMORPHIC_WEBBING_LINE = _glyph(
+    "biomorphic_webbing",
     "Biomorphic Webbing — Organic Webbing evolved. Everything it did (no vials, no "
     "no-fluid cash tax) and the suit takes more than you told it to: an extra chance at "
-    "bonus cash on every patrol, plus a bonus component and a bonus photo on combat "
-    "patrols."
+    "bonus cash on every patrol, a bonus component and a bonus photo on combat patrols, "
+    "and it keeps helping itself wherever else you go — tutoring, visiting, selling "
+    "photos — turning up components you never picked up.",
 )
 
 ARACHNID_PERKS = [
@@ -81,18 +121,64 @@ ARACHNID_DRAWBACKS = [
     "50% faster, so a full meter runs dry in 16 hours instead of 24. Keep showing up "
     "as Peter, or there won't be much Peter left to come back to.",
 ]
-SYMBIOTE_PERKS = [
-    "Venom Blast — the hit that would end a boss fight is absorbed and countered instead (once per fight).",
-    "Stealth Mode — full /shakedown immunity while you've been inactive 20+ minutes.",
+# Venom Blast became a button the player presses on 2026-08-24, and this line has to say so:
+# a perk you have to deploy is worth nothing to a subscriber who doesn't know it's there. The
+# old wording ("the suit swallows the hit whole") described the automatic version, which
+# negated the incoming hit outright. A button can't do that — it's pressed before the round
+# resolves, not in the middle of it — so what's promised now is guaranteed damage and a round
+# nothing gets through, on the player's timing. The threshold is interpolated from
+# battle_service rather than spelled out, because this exact line already went stale once when
+# that number moved, and the in-fight button subtext quotes the same constant.
+SYMBIOTE_PERKS_STATIC = [
+    _glyph("venom_blast",
+           f"Venom Blast — in a boss fight, once the suit is down to "
+           f"{VENOM_BLAST_TRIGGER_INTEGRITY}% integrity or lower, a Venom Blast button unlocks "
+           f"beside Evade. Spend it when you decide to: it hits twice as hard as an ordinary "
+           f"attack, and nothing gets through to answer it. Once per fight."),
 ]
+
+
+def _stealth_mode_line(protections: int) -> str:
+    """Stealth Mode's perk line, with a running count of what it's actually done.
+
+    A function rather than a constant in SYMBIOTE_PERKS_STATIC because the count is
+    per-subscriber, and it belongs on this line rather than in a section of its own: the
+    number is meaningless without the sentence explaining what was blocked.
+
+    The count exists because this is the only perk in the tier that fires where its owner
+    can't see it. A protected /shakedown answers the *thief* and tells the target nothing,
+    and the gate only opens once the target has been idle 20+ minutes — so "it worked" and
+    "you weren't watching" are the same condition. Every other perk shows itself the moment
+    it fires. Zero renders as no clause at all, not "blocked 0 attempts": a brand-new
+    subscriber reading the welcome DM shouldn't be handed a nil stat about a perk they
+    haven't had time to benefit from.
+
+    The threshold is interpolated, not typed. Hardcoding it is what went stale on the Venom
+    Blast line above when its constant moved, and the same trap was already sprung once on
+    the ally-decay drawback.
+    """
+    minutes = STEALTH_MODE_INACTIVITY_THRESHOLD_SECONDS // 60
+    line = f"Stealth Mode — full /shakedown immunity while you've been inactive {minutes}+ minutes."
+    if protections:
+        line += (
+            f" It's turned away {protections} attempt{'' if protections == 1 else 's'} so far — "
+            f"you weren't there to see any of them."
+        )
+    return _glyph("stealth_mode", line)
+
+
+def _symbiote_perks(stealth_protections: int) -> list[str]:
+    return [*SYMBIOTE_PERKS_STATIC, _stealth_mode_line(stealth_protections)]
+
+
 SYMBIOTE_DRAWBACKS = [
-    "The suit overrides you when you try to hold back — sometimes a Dodge comes out as "
-    "an attack instead. It never overrides an attack. It doesn't need to.",
-    "Sonic Dampener — the Shocker's frequency cuts through the bond. +30% incoming "
-    "damage from him specifically.",
+    "The suit overrides you when you try to hold back — in patrols and boss fights "
+    "alike, a Dodge sometimes comes out as an attack, and sometimes it won't let you "
+    "reach for a gadget at all. A gadget it talks you out of isn't spent, so you lose "
+    "the round and not the gear. It never overrides an attack. It doesn't need to.",
 ]
 # Display names for the gated purchasables. Which items are gated, and at which tier,
-# is shop_service.GATED_ITEM_MIN_RANK's business — this only supplies the wording, and
+# is patreon_service.GATED_ITEM_MIN_RANK's business — this only supplies the wording, and
 # the checklist below iterates the rank map so a newly gated item shows up here on its
 # own rather than being silently left off the list. Buying is what the tier unlocks;
 # none of these are granted for free.
@@ -146,12 +232,19 @@ def _bullets(lines: list[str]) -> str:
     return "\n".join(f"• {line}" for line in lines)
 
 
-def _perk_sections(tier_rank: int, owned_gated_items: set[str]) -> list[tuple[str | None, list[tuple[str, str]]]]:
+def _perk_sections(
+    tier_rank: int, owned_gated_items: set[str], stealth_protections: int = 0
+) -> list[tuple[str | None, list[tuple[str, str]]]]:
     """The perk breakdown shared by /patreon perks and the welcome DM, so the two can
     never drift. Symbiote is a strict superset of Arachnid, so its sections stack on
     top rather than replacing — including the drawbacks, which a Symbiote subscriber
     inherits and therefore has to be told about too. The one exception is the webbing
-    perk, which upgrades in place instead of stacking (see ORGANIC_WEBBING_LINE)."""
+    perk, which upgrades in place instead of stacking (see ORGANIC_WEBBING_LINE).
+
+    stealth_protections defaults to 0 so a caller with no reason to count (and the scratch
+    checks) can omit it — 0 renders the Stealth Mode line exactly as it read before the
+    count existed. Only read when the viewer is Symbiote, since that's the only tier the
+    line renders for at all."""
     if tier_rank == TIER_RANK_NONE:
         return [(
             None,
@@ -165,13 +258,14 @@ def _perk_sections(tier_rank: int, owned_gated_items: set[str]) -> list[tuple[st
     perks = [BIOMORPHIC_WEBBING_LINE if is_symbiote else ORGANIC_WEBBING_LINE, *ARACHNID_PERKS]
     drawbacks = list(ARACHNID_DRAWBACKS)
     if is_symbiote:
-        perks += SYMBIOTE_PERKS
+        perks += _symbiote_perks(stealth_protections)
         drawbacks += SYMBIOTE_DRAWBACKS
 
     # Emoji-only attribution, per the house rule — the tier's emoji carries the
-    # attribution, never the tier name as text. Symbiote gets its own emoji rather
-    # than reusing Arachnid's.
-    tier_e = emoji("symbiote" if is_symbiote else "arachnid") or ""
+    # attribution, never the tier name as text. This is the viewer's own tier, so a
+    # Symbiote subscriber sees the Symbiote emoji on the Arachnid perks they inherited:
+    # the badge means "your subscription", not "the tier this originated at".
+    tier_e = tier_badge(tier_rank)
     sections: list[tuple[str | None, list[tuple[str, str]]]] = [
         (f"{tier_e} Always On".strip(), [("", _bullets(perks))]),
         (f"{tier_e} What It Costs You".strip(), [("", _bullets(drawbacks))]),
@@ -196,7 +290,9 @@ def _perk_sections(tier_rank: int, owned_gated_items: set[str]) -> list[tuple[st
     return sections
 
 
-def build_welcome_view(tier_rank: int, owned_gated_items: set[str]) -> StaticView:
+def build_welcome_view(
+    tier_rank: int, owned_gated_items: set[str], stealth_protections: int = 0
+) -> StaticView:
     """The welcome DM as a Components V2 view. Note a V2 message can't also carry
     `content` or an `embed`, so this has to be entirely self-contained — and its
     `files` must be passed along as `files=view.files` or the thumbnail won't
@@ -208,10 +304,20 @@ def build_welcome_view(tier_rank: int, owned_gated_items: set[str]) -> StaticVie
     else:
         title, intro, icon_key = "Patreon Connected", NO_PLEDGE_INTRO, "arachnid"
 
-    field_groups = _perk_sections(tier_rank, owned_gated_items)
+    field_groups = _perk_sections(tier_rank, owned_gated_items, stealth_protections)
     field_groups.append(("Your Commands", [("", _bullets(COMMAND_LINES))]))
 
     return StaticView(title, description=intro, field_groups=field_groups, icon_key=icon_key)
+
+
+async def _stealth_protections(tier_rank: int, discord_id: int) -> int:
+    """The Stealth Mode block count, or 0 for anyone the line won't render for anyway.
+
+    The tier check is here rather than at the two call sites so neither can forget it and
+    spend a query on a card that has no Stealth Mode line to put the answer on."""
+    if tier_rank < TIER_RANK_SYMBIOTE:
+        return 0
+    return await count_stealth_protections(discord_id)
 
 
 async def _owned_gated_items(session, discord_id: int) -> set[str]:
@@ -244,11 +350,13 @@ class PatreonCog(commands.Cog):
 
     @patreon.command(name="link", description="Connect your Patreon account to unlock your perks.")
     async def link(self, ctx: discord.ApplicationContext):
-        # Someone who subscribed before ever linking — or who subscribed, linked, and
-        # then upgraded — has no other way to get their welcome. Re-running /patreon
-        # link re-sends it against their current tier. The authorize button still goes
-        # out alongside it, so a genuine re-link (switching Patreon accounts, or
-        # re-checking a tier that changed on Patreon's side) is unaffected.
+        # Re-running this on an existing link re-sends the welcome against whatever tier
+        # the user currently resolves to. The background re-check now handles the common
+        # case on its own (on_patreon_tier_upgraded, below), so this is the manual
+        # fallback: the DM bounced, or the pledge landed outside the window that job
+        # watches. The authorize button still goes out alongside it, so a genuine re-link
+        # (switching Patreon accounts, re-checking a tier that changed on Patreon's side)
+        # is unaffected.
         async with async_session() as session:
             already_linked = await session.get(PatreonLink, ctx.author.id) is not None
 
@@ -319,7 +427,15 @@ class PatreonCog(commands.Cog):
             tier_rank = await get_tier_rank(session, ctx.author.id)
             owned_gated_items = await _owned_gated_items(session, ctx.author.id)
 
-        view = StaticView("Your Active Perks", field_groups=_perk_sections(tier_rank, owned_gated_items))
+        # Outside the block above on purpose — count_stealth_protections opens its own
+        # session (see its docstring), and it's skipped entirely below Symbiote since that's
+        # the only tier whose card carries the line.
+        stealth_protections = await _stealth_protections(tier_rank, ctx.author.id)
+
+        view = StaticView(
+            "Your Active Perks",
+            field_groups=_perk_sections(tier_rank, owned_gated_items, stealth_protections),
+        )
         await ctx.respond(view=view, files=view.files, ephemeral=True)
 
     async def _send_welcome(self, discord_id: int) -> bool:
@@ -330,13 +446,37 @@ class PatreonCog(commands.Cog):
             tier_rank = await get_tier_rank(session, discord_id)
             owned_gated_items = await _owned_gated_items(session, discord_id)
 
-        view = build_welcome_view(tier_rank, owned_gated_items)
+        # A first-time subscriber has none, and 0 renders no clause — but /patreon link
+        # re-sends this card on demand, so a long-standing subscriber re-running it should
+        # see the same count /patreon perks would give them.
+        stealth_protections = await _stealth_protections(tier_rank, discord_id)
+
+        view = build_welcome_view(tier_rank, owned_gated_items, stealth_protections)
         try:
             user = await self.bot.fetch_user(discord_id)
             await user.send(view=view, files=view.files)
             return True
         except discord.HTTPException:
             return False
+
+    @commands.Cog.listener()
+    async def on_patreon_tier_upgraded(self, discord_id: int):
+        """A background re-check found a higher tier than we had stored — dispatched by
+        cogs/scheduler_cog.py's patreon_tick. This is the link-then-subscribe case: at
+        link time there was no pledge, so the welcome that went out was the "Patreon
+        Connected, nothing active yet" card, and the pledge itself arrives with no
+        interaction for the bot to respond to.
+
+        No fallback when the DM bounces, unlike /patreon link's copy of this — there's no
+        channel to answer in, because nothing the user did triggered this. Their perks are
+        live either way; the log line is so a "why did I never hear anything" question has
+        an answer."""
+        if not await self._send_welcome(discord_id):
+            log.info(
+                "Patreon upgrade welcome undelivered (DMs closed): discord_id=%s — perks are "
+                "active regardless, /patreon perks shows them",
+                discord_id,
+            )
 
     async def _callback(self, request: web.Request) -> web.Response:
         code = request.query.get("code")

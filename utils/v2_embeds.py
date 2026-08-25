@@ -14,6 +14,23 @@ from __future__ import annotations
 import discord
 
 from utils import icons
+from utils.tier_accent import current_accent
+
+
+def make_container(accent: int | None = None) -> discord.ui.Container:
+    """Every Components V2 Container in this project should come from here, including the
+    ones inside a cog's own bespoke DesignerView — the accent bar is a Patreon perk (see
+    services.patreon_service.accent_for_rank), and a panel that builds
+    `discord.ui.Container()` directly is a panel where a subscriber silently loses it.
+    `grep -rn "discord\\.ui\\.Container(" cogs utils` should only ever match this function.
+
+    accent=None means "use whatever tier the invoking user has", read from the ambient
+    per-command context. Pass one explicitly only when re-rendering from a view that
+    captured it at construction: component callbacks run in their own task with a fresh
+    context, so current_accent() is None by then and the colour would drop on the first
+    button press. A colour of None is what a non-subscriber gets, and pycord treats that
+    identically to omitting the argument."""
+    return discord.ui.Container(colour=accent if accent is not None else current_accent())
 
 
 def add_header(
@@ -112,6 +129,7 @@ def static_container(
     field_groups: list[tuple[str, list[tuple[str, str]]]] | None = None,
     bulleted: bool = False,
     icon_key: str | None = None,
+    accent: int | None = None,
 ) -> tuple[discord.ui.Container, discord.File | None]:
     """`fields` is a flat, unheaded list — fine for short commands with 2-4 related
     values. `field_groups` is `[(heading, fields), ...]` — use it once a command's
@@ -123,11 +141,13 @@ def static_container(
     art exists. Returns (container, file); the file (if not None) must be passed
     through to the response/edit's `files=` list by the caller.
 
+    accent: see make_container — leave it alone unless you're re-rendering.
+
     Only one visible divider brackets the body (header -> content); different
     *groups* get a real divider between them too. Fields within the same group
     either each get their own block (default) or get combined into one bulleted
     block (bulleted=True) — see _add_group."""
-    container = discord.ui.Container()
+    container = make_container(accent)
     file = add_header(container, title, description, icon_key)
 
     groups = field_groups or ([(None, fields)] if fields else [])
@@ -149,7 +169,12 @@ class StaticView(discord.ui.DesignerView):
     icon_key: pass to give the title a Thumbnail (see add_header). When set and
     the art exists, `self.files` holds the discord.File that must be passed to
     `ctx.respond(view=view, files=view.files)` — always safe to pass even when
-    empty, so call sites don't need an if-check of their own."""
+    empty, so call sites don't need an if-check of their own.
+
+    The Patreon tier accent needs nothing from the call site: it's read from the
+    ambient per-command context (see utils/tier_accent.py), which is live wherever a
+    StaticView is legitimately built. `accent` is only for the rare case of building
+    one inside a component callback, where that context is already gone."""
 
     def __init__(
         self,
@@ -161,9 +186,10 @@ class StaticView(discord.ui.DesignerView):
         footer_lines: list[str] | None = None,
         icon_key: str | None = None,
         timeout: float | None = None,
+        accent: int | None = None,
     ):
         super().__init__(timeout=timeout)
-        container, file = static_container(title, description, fields, field_groups, bulleted, icon_key)
+        container, file = static_container(title, description, fields, field_groups, bulleted, icon_key, accent)
         if footer_lines:
             container.add_item(discord.ui.Separator())
             subtext = "\n".join(f"-# {line}" for line in footer_lines if line)
@@ -212,12 +238,19 @@ class PaginatedView(discord.ui.DesignerView):
         footer_lines: list[str] | None = None,
         icon_key: str | None = None,
         timeout: float = 180,
+        accent: int | None = None,
     ):
         super().__init__(timeout=timeout)
         self.pages = pages
         self.author_id = author_id
         self.footer_lines = footer_lines
         self.icon_key = icon_key
+        # Captured here, not read per-render: _render() runs again inside the Prev/Next
+        # callbacks, which are separate tasks with a fresh context, so the ambient accent
+        # is already gone by the first page turn. Resolving it once at construction is
+        # also the correct semantics — the pager belongs to author_id, whose tier can't
+        # change mid-browse in any way worth re-querying for.
+        self.accent = accent if accent is not None else current_accent()
         self.index = 0
         self.message: discord.Message | None = None
         self._render()
@@ -241,7 +274,7 @@ class PaginatedView(discord.ui.DesignerView):
         self.clear_items()
         page = self.pages[self.index]
 
-        container = discord.ui.Container()
+        container = make_container(self.accent)
         icon_prefix = icons.emoji(self.icon_key) if self.icon_key else None
         title_line = f"{icon_prefix} {page['title']}" if icon_prefix else page["title"]
         header_text = f"# {title_line}"

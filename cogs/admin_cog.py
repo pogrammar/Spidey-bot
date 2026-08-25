@@ -22,9 +22,17 @@ from services.economy import add_bank, add_wallet, get_or_create_user, wipe_user
 from services.gadget_service import list_all_gadgets
 from services.inventory_service import add_item, get_editable_row, remove_item
 from services.market_service import admin_cancel_listing
+from services.patreon_service import TIER_RANK_SYMBIOTE, get_tier_rank
+from services.shakedown_service import (
+    STEALTH_MODE_INACTIVITY_THRESHOLD_SECONDS,
+    stealth_mode_active,
+    target_idle_seconds,
+)
+from services.shop_service import install_tool, scrap_note
 from utils.embeds import base_embed, error_embed
 from utils.icons import emoji, item_label, thumbnail
-from utils.v2_embeds import StaticView, add_field_groups
+from utils.tier_accent import current_accent
+from utils.v2_embeds import StaticView, add_field_groups, make_container
 
 ALLY_CHOICES = [discord.OptionChoice(name=name, value=key) for key, name in ALLY_NAMES.items()]
 
@@ -38,7 +46,9 @@ COOLDOWN_CHOICES = [
 ]
 
 # Categories for /admin help — kept in sync by hand since this is a small, fixed
-# command set; not worth generating dynamically from the command tree for 24 commands.
+# command set; not worth generating dynamically from the command tree. Deliberately
+# no count in this comment: it said "24" while the tree held 29, because a number here
+# goes stale every time a command lands and nothing fails when it does.
 HELP_SECTIONS = [
     ("General", [
         ("/admin bypass", "Toggle cooldown + brew-time bypass for yourself."),
@@ -151,6 +161,9 @@ class AdminHelpView(discord.ui.DesignerView):
         self.section = HELP_SECTIONS[0][0]
         self.message: discord.Message | None = None
         self.files: list[discord.File] = []
+        # Before _render below: the section select re-renders from its own task, where
+        # the ambient per-command accent no longer exists.
+        self.accent = current_accent()
         self._render()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -172,7 +185,7 @@ class AdminHelpView(discord.ui.DesignerView):
         self.clear_items()
         commands_ = next(cmds for section, cmds in HELP_SECTIONS if section == self.section)
 
-        container = discord.ui.Container()
+        container = make_container(self.accent)
         file = _add_admin_header(container, f"Admin — {self.section}")
         self.files = [file] if file else []
         container.add_separator()
@@ -208,6 +221,10 @@ class UserInfoView(discord.ui.DesignerView):
         self.author_id = author_id
         self.message: discord.Message | None = None
         self.files: list[discord.File] = []
+        # The *admin's* accent, not the target's — this is the colour of the person
+        # reading the panel, the same as everywhere else, even though the content is
+        # someone else's profile.
+        self.accent = current_accent()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
@@ -272,7 +289,7 @@ class UserInfoView(discord.ui.DesignerView):
         ]
 
         self.clear_items()
-        container = discord.ui.Container()
+        container = make_container(self.accent)
         file = _add_admin_header(container, f"Admin — {self.target_display}")
         self.files = [file] if file else []
         add_field_groups(container, field_groups)
@@ -329,6 +346,7 @@ class AdminsListView(discord.ui.DesignerView):
         self.selected_id: int | None = None
         self.message: discord.Message | None = None
         self.files: list[discord.File] = []
+        self.accent = current_accent()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
@@ -349,7 +367,7 @@ class AdminsListView(discord.ui.DesignerView):
         self.clear_items()
         granted = await list_granted_admins(session)
 
-        container = discord.ui.Container()
+        container = make_container(self.accent)
         file = _add_admin_header(container, "Admin — Access List")
         self.files = [file] if file else []
         container.add_separator()
@@ -698,9 +716,27 @@ class AdminCog(commands.Cog):
                 await ctx.respond(embed=error_embed(f"No such item: `{item}`."), ephemeral=True)
                 return
             await get_or_create_user(session, target.id)
-            await add_item(session, target.id, item, quantity)
+            scrapped_note = ""
+            if item_def.category == "tool":
+                # Tools aren't stackable inventory — they're a single equipped row with
+                # durability, and cameras additionally delete their lower-tier siblings.
+                # add_item can't do either, so a granted camera used to land inert with
+                # the old one still shooting. quantity is ignored on this path by
+                # design: there is no such thing as owning two of the same tool. The
+                # scrap note matters more here than in the shop: an admin granting a Gold
+                # camera is destroying someone else's Silver, and won't otherwise see it.
+                scrapped_note = await scrap_note(
+                    session, await install_tool(session, target.id, item_def)
+                )
+                quantity = 1
+            else:
+                await add_item(session, target.id, item, quantity)
+            await session.commit()
 
-        await _reply(ctx, f"Gave {target.mention} {quantity}x {item_label(item, item_def.name)}.")
+        await _reply(
+            ctx,
+            f"Gave {target.mention} {quantity}x {item_label(item, item_def.name)}.{scrapped_note}",
+        )
 
     @inventory.command(name="remove-item", description="Take an item away.")
     async def remove_item_cmd(

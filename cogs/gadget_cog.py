@@ -17,7 +17,8 @@ from services.gadget_service import (
 )
 from utils.embeds import error_embed
 from utils.icons import emoji, item_label
-from utils.v2_embeds import StaticView, add_field_groups
+from utils.tier_accent import current_accent
+from utils.v2_embeds import StaticView, add_field_groups, make_container
 
 GADGET_FOOTERS = [
     "Every gadget here started as a Stark-wannabe napkin sketch.",
@@ -38,20 +39,33 @@ async def owned_gadget_autocomplete(ctx: discord.AutocompleteContext) -> list[di
         if view.item_key in seen or typed not in view.name.lower():
             continue
         seen.add(view.item_key)
-        status = " — equipped" if view.equipped else f" ({view.durability}% durability)"
+        if view.tier_locked:
+            status = " — inactive (Patreon tier lapsed)"
+        elif view.equipped:
+            status = " — equipped"
+        else:
+            status = f" ({view.durability}% durability)"
         choices.append(discord.OptionChoice(name=f"{view.name}{status}", value=view.item_key))
     return choices[:25]
 
 
 async def equipped_gadget_autocomplete(ctx: discord.AutocompleteContext) -> list[discord.OptionChoice]:
     """For /gadget unequip and /gadget upgrade — only gadgets currently in your
-    loadout, since those are the only ones either command can act on."""
+    loadout, since those are the only ones either command can act on. Tier-locked ones
+    are still listed: unequip is exactly what you'd want to do with an inactive gadget,
+    and upgrade_gadget explains itself rather than the name just being missing."""
     async with async_session() as session:
         views = await list_owned_gadget_views(session, ctx.interaction.user.id)
 
     typed = (ctx.value or "").lower()
     return [
-        discord.OptionChoice(name=f"{view.name} (lvl {view.upgrade_level}/{MAX_UPGRADE_LEVEL})", value=view.item_key)
+        discord.OptionChoice(
+            name=(
+                f"{view.name} (lvl {view.upgrade_level}/{MAX_UPGRADE_LEVEL})"
+                f"{' — inactive' if view.tier_locked else ''}"
+            ),
+            value=view.item_key,
+        )
         for view in views
         if view.equipped and typed in view.name.lower()
     ][:25]
@@ -64,7 +78,12 @@ def _dedupe_options(views: list[OwnedGadgetView], selected_key: str | None) -> l
         if view.item_key in seen:
             continue
         seen.add(view.item_key)
-        status = "equipped" if view.equipped else f"{view.durability}% durability"
+        if view.tier_locked:
+            status = "inactive (Patreon tier lapsed)"
+        elif view.equipped:
+            status = "equipped"
+        else:
+            status = f"{view.durability}% durability"
         options.append(
             discord.SelectOption(
                 label=view.name,
@@ -143,6 +162,10 @@ class GadgetPanelView(discord.ui.DesignerView):
         self.author_id = author_id
         self.selected_key: str | None = None
         self.message: discord.Message | None = None
+        # Before _render below, and captured rather than read per-render: every button
+        # and select callback re-renders from its own task, where the ambient
+        # per-command accent no longer exists.
+        self.accent = current_accent()
         self._render(views)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -171,7 +194,7 @@ class GadgetPanelView(discord.ui.DesignerView):
         best = self._best_copy(views, self.selected_key) if self.selected_key else None
         equipped_count = sum(1 for v in views if v.equipped)
 
-        container = discord.ui.Container()
+        container = make_container(self.accent)
         if best is not None:
             title = item_label(best.item_key, best.name)
         else:
@@ -196,15 +219,33 @@ class GadgetPanelView(discord.ui.DesignerView):
                 ("Upgrade Level", f"{best.upgrade_level}/{MAX_UPGRADE_LEVEL}"),
                 ("Equipped", "Yes" if best.equipped else "No"),
             ]
+            if best.tier_locked:
+                stat_fields.append((
+                    "Status",
+                    "Inactive — the Patreon tier that unlocked it isn't active on your "
+                    "account. Still yours, upgrades intact; it works again when the pledge "
+                    "is back. See /patreon status.",
+                ))
             add_field_groups(container, [(None, stat_fields)])
         else:
             container.add_separator()
 
         container.add_row(GadgetSelect(self, _dedupe_options(views, self.selected_key)))
         container.add_row(
+            # Equip/Unequip stay live for a tier-locked gadget — freeing the slot is the
+            # one useful thing to do with an inactive one. Upgrade doesn't: it's a cash
+            # spend on something that can't fire, and upgrade_gadget rejects it anyway.
             EquipButton(self, disabled=best is None or best.equipped),
             UnequipButton(self, disabled=best is None or not best.equipped),
-            UpgradeButton(self, disabled=best is None or not best.equipped or best.upgrade_level >= MAX_UPGRADE_LEVEL),
+            UpgradeButton(
+                self,
+                disabled=(
+                    best is None
+                    or not best.equipped
+                    or best.tier_locked
+                    or best.upgrade_level >= MAX_UPGRADE_LEVEL
+                ),
+            ),
         )
 
         self.add_item(container)
@@ -229,12 +270,18 @@ class GadgetCog(commands.Cog):
 
         equipped_fields = []
         stored_fields = []
+        any_locked = False
         for view in views:
-            entry = (
-                item_label(view.item_key, view.name),
-                f"{view.durability}% durability, upgrade level {view.upgrade_level}/{MAX_UPGRADE_LEVEL}",
+            detail = f"{view.durability}% durability, upgrade level {view.upgrade_level}/{MAX_UPGRADE_LEVEL}"
+            if view.tier_locked:
+                # Says so on the line itself rather than only in the footer — a gadget
+                # that never fires and looks completely normal in this list is the one
+                # thing guaranteed to be read as broken instead of revoked.
+                any_locked = True
+                detail += "\n-# Inactive — the Patreon tier that unlocked it isn't active on your account."
+            (equipped_fields if view.equipped else stored_fields).append(
+                (item_label(view.item_key, view.name), detail)
             )
-            (equipped_fields if view.equipped else stored_fields).append(entry)
 
         field_groups = []
         if equipped_fields:
@@ -242,13 +289,18 @@ class GadgetCog(commands.Cog):
         if stored_fields:
             field_groups.append(("In Storage", stored_fields))
 
+        footer_lines = [f"You can have up to {MAX_EQUIPPED_GADGETS} equipped at once."]
+        if any_locked:
+            footer_lines.append(
+                "Inactive gadgets stay yours and keep their upgrades — they switch straight "
+                "back on when the pledge is. See /patreon status."
+            )
+        footer_lines.append(random.choice(GADGET_FOOTERS))
+
         v2_view = StaticView(
             "Your Gadgets",
             field_groups=field_groups,
-            footer_lines=[
-                f"You can have up to {MAX_EQUIPPED_GADGETS} equipped at once.",
-                random.choice(GADGET_FOOTERS),
-            ],
+            footer_lines=footer_lines,
             icon_key="gadgets_category",
         )
         await ctx.respond(view=v2_view, files=v2_view.files)

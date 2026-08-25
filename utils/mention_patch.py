@@ -6,7 +6,7 @@ call picks this up automatically — no per-command changes needed.
 Skipped for ephemeral responses: mentioning someone in a message only they can see
 is pointless, and self-mentions don't trigger a notification anyway.
 
-Also skipped for Components V2 views (see cogs.v2_demo_cog): Discord rejects any
+Also skipped for Components V2 views (see utils.v2_embeds): Discord rejects any
 `content` at all alongside a V2 component tree — it must be fully self-contained."""
 
 import discord

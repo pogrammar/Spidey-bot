@@ -8,11 +8,12 @@ from dataclasses import dataclass
 from urllib.parse import urlencode
 
 import aiohttp
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import config
 from db.models import PatreonLink
+from utils.icons import emoji
 
 AUTHORIZE_URL = "https://www.patreon.com/oauth2/authorize"
 TOKEN_URL = "https://www.patreon.com/api/oauth2/token"
@@ -58,6 +59,100 @@ def tier_requirement_label(min_rank: int) -> str:
     return f"{label}+" if min_rank < TIER_RANK_SYMBIOTE else label
 
 
+# Two different questions get asked about tier emoji, and they have different answers —
+# hence two helpers rather than one:
+#
+#   tier_badge(rank)              -> "which tier is this player?"   (live attribution)
+#   tier_requirement_badges(rank) -> "which tiers clear this gate?" (static catalog)
+#
+# Live attribution is for the moment a perk fires, or a drawback is explained to the
+# person carrying it. A Symbiote subscriber reading about the ally-decay cost they
+# inherited from Arachnid should see the *Symbiote* badge, because the badge is saying
+# "this is your subscription talking" — per GAME_DESIGN.md §9 the tier's *name* never
+# appears in that copy, so the emoji is the entire signal, and showing Arachnid's there
+# attributes their cost to a tier they aren't on.
+#
+# A catalog entry has no player to attribute to, so it answers the other question and
+# wears every badge that qualifies. A lone Arachnid badge on a shop listing reads as
+# "Arachnid only" to a Symbiote subscriber who does in fact have it — this is the visual
+# form of the "+" in tier_requirement_label.
+def tier_badge(tier_rank: int) -> str:
+    """The emoji for the tier a player actually has. "" below Arachnid, and "" if that
+    emoji hasn't been uploaded yet — same "a miss means render without it, never an
+    error" contract as emoji() itself, so call sites can interpolate it unguarded."""
+    if tier_rank >= TIER_RANK_SYMBIOTE:
+        return emoji("symbiote") or ""
+    if tier_rank >= TIER_RANK_ARACHNID:
+        return emoji("arachnid") or ""
+    return ""
+
+
+def tier_requirement_badges(min_rank: int) -> str:
+    """Every tier badge that satisfies a gate at `min_rank`, lowest rank first."""
+    badges = [
+        tier_badge(rank)
+        for rank in (TIER_RANK_ARACHNID, TIER_RANK_SYMBIOTE)
+        if rank >= min_rank
+    ]
+    return " ".join(badge for badge in badges if badge)
+
+
+# The accent bar on every Components V2 container a subscriber sees — the one perk that's
+# purely visual. utils/tier_accent.py carries the resolved value through a command;
+# utils.v2_embeds.make_container() is where it lands.
+#
+# Keyed on the *exact* rank, which is deliberate and is the one place in this file that
+# isn't a rank comparison. A gate asks "does this rank clear the bar" — that's why
+# GATED_ITEM_MIN_RANK is compared with `<` and a Symbiote subscriber satisfies an
+# Arachnid-gated item. An accent asks "which tier IS this player", and that has exactly
+# one answer. Walking this with `>=` the way tier_requirement_badges does would paint a
+# Symbiote subscriber Arachnid red, which is precisely the misattribution tier_badge
+# exists to prevent. Do not "consistency-fix" this into a rank comparison.
+ACCENT_BY_RANK: dict[int, int] = {
+    TIER_RANK_ARACHNID: 0xA91D3A,
+    TIER_RANK_SYMBIOTE: 0x707C8F,
+}
+
+
+def accent_for_rank(tier_rank: int) -> int | None:
+    """The container accent for the tier a player actually has, or None below Arachnid.
+    None means "no accent bar at all" rather than some neutral colour — discord.ui.Container
+    treats `colour=None` as identical to omitting it entirely, so callers can pass this
+    straight through without an if-check."""
+    return ACCENT_BY_RANK.get(tier_rank)
+
+
+# Patreon-gated purchasables, each mapped to the MINIMUM tier rank allowed to buy it.
+# Everyone still *sees* these in the shop (same as any reputation-locked gadget) — only
+# the purchase is blocked. list_shop_items applies no tier filter at all.
+#
+# A rank map rather than one set per tier: buy_item needs exactly one lookup no matter
+# how many tiers exist, the refusal message names the tier that actually applies instead
+# of hardcoding "Arachnid+", and GATED_ITEM_KEYS below derives from it so a new gated
+# item can't be added here and silently omitted from /shop's branding or /patreon perks'
+# ownership checklist. Compared with `<`, never `==` — Symbiote is a strict superset of
+# Arachnid and must satisfy an Arachnid gate.
+#
+# Lives here rather than in shop_service (where it was until 2026-08-23) because buying
+# is no longer the only thing it governs: the same gate is now re-checked at *use* time
+# so a lapsed pledge actually loses these (patrol_service.get_effective_camera,
+# gadget_service.list_usable_gadgets). patrol_service can't import shop_service — that's
+# a cycle, since shop_service reads CAMERA_FAMILY_KEYS from it — and a tier gate is a
+# Patreon concept regardless of which surface consults it.
+GATED_ITEM_MIN_RANK: dict[str, int] = {
+    "spider_bots": TIER_RANK_ARACHNID,
+    "electric_webbing": TIER_RANK_ARACHNID,
+    "camera_silver": TIER_RANK_ARACHNID,
+    "camera_gold": TIER_RANK_SYMBIOTE,
+}
+
+# For the callers that only ask "is this item gated at all?" without caring which tier —
+# /shop's branding note, /patreon perks' ownership query. Deliberately NOT named
+# ARACHNID_GATED_ITEM_KEYS any more (it was until 2026-08-22): the moment a
+# Symbiote-gated item joins the map that name is a lie.
+GATED_ITEM_KEYS = frozenset(GATED_ITEM_MIN_RANK)
+
+
 def tier_rank_from_name(tier: str | None) -> int:
     """Pure name -> rank mapping, no DB lookup — exposed separately from
     get_tier_rank() so callers already holding a tier string (e.g. the OAuth
@@ -82,6 +177,25 @@ async def get_tier_rank(session: AsyncSession, discord_id: int) -> int:
     if link is None:
         return TIER_RANK_NONE
     return tier_rank_from_name(link.tier)
+
+
+async def locked_item_keys(session: AsyncSession, discord_id: int, item_keys) -> frozenset[str]:
+    """Which of `item_keys` this user owns but can no longer use, because the tier that
+    unlocked them isn't active any more.
+
+    The read-only counterpart to the enforcement in gadget_service.list_usable_gadgets and
+    patrol_service.get_effective_camera: same live-rank rule, but for surfaces that only
+    need to *label* the situation. A revoked item that renders identically to a working one
+    reads as a bug rather than a lapsed pledge, so every list that shows owned gear should
+    be able to ask this cheaply.
+
+    Returns empty without touching the database when nothing in `item_keys` is gated at
+    all, which is the normal case."""
+    gated = GATED_ITEM_KEYS.intersection(item_keys)
+    if not gated:
+        return frozenset()
+    tier_rank = await get_tier_rank(session, discord_id)
+    return frozenset(key for key in gated if tier_rank < GATED_ITEM_MIN_RANK[key])
 
 
 # Accelerated Growth (Arachnid+ perk) — Reputation XP boost and Supportive Allies
@@ -237,6 +351,22 @@ async def handle_callback(session: AsyncSession, code: str, state: str) -> tuple
 # means a lapsed pledge keeps its perks for up to one extra interval, which is the correct
 # side to be wrong on.
 REFRESH_STALE_AFTER = datetime.timedelta(hours=6)
+# A link with no stored tier has nothing to revoke — the only change it can produce is a
+# *grant*. That's the link-then-subscribe order (link while still deciding, pledge
+# afterwards), and answering it with up to six hours of nothing happening gets the
+# asymmetry backwards: being slow to revoke protects someone who is paying, while being
+# slow to grant just strands them. Sits just above PATREON_TICK_INTERVAL_MINUTES below, so
+# a pending link comes up on roughly every other tick — call it 20-35 minutes from pledging
+# to hearing about it. Dropping it under the tick interval wouldn't make that faster, only
+# more expensive: the queue can't drain more often than it runs.
+REFRESH_PENDING_STALE_AFTER = datetime.timedelta(minutes=20)
+# ...but only while the link is still new. refresh_link also nulls the tier on a dead
+# grant (_DeadLinkError), and a tier-less row that's been sitting for days is far likelier
+# to be one of those — or someone who linked and never pledged — than a pledge about to
+# land, and neither is worth re-reading three times an hour forever. Past this window a
+# row falls back to the normal cadence above; /patreon link still re-sends the welcome on
+# demand for anyone who subscribes later than that.
+REFRESH_PENDING_WINDOW = datetime.timedelta(hours=48)
 # Cap per tick so one hot loop can't hammer Patreon, and so a persistently failing link
 # can't starve the rest of the queue (rows are taken oldest-checked-first).
 REFRESH_BATCH_SIZE = 25
@@ -284,7 +414,11 @@ class RefreshOutcome:
 
     @property
     def rank_delta(self) -> int:
-        """Negative when the refresh cost the user perks — the case worth logging loudly."""
+        """Negative when the refresh cost the user perks — the case worth logging loudly.
+        Positive is the link-then-subscribe grant, which the scheduler turns into a welcome
+        DM (cogs/scheduler_cog.py). Only meaningful alongside `changed`, i.e. when we
+        actually reached Patreon: an unreachable check reports tier=None and would read as
+        a downgrade on its own."""
         return tier_rank_from_name(self.tier) - tier_rank_from_name(self.previous_tier)
 
 
@@ -397,14 +531,33 @@ async def refresh_link(session: AsyncSession, link: PatreonLink) -> RefreshOutco
 
 
 async def refresh_stale_links(session: AsyncSession) -> list[tuple[int, RefreshOutcome]]:
-    """One tick's worth of re-checks: the oldest-checked links past REFRESH_STALE_AFTER,
-    capped at REFRESH_BATCH_SIZE. Returns (discord_id, outcome) pairs for the caller to
-    log — deliberately returns rather than logs, so the service stays free of the cog's
-    logging conventions and is testable without capturing output."""
-    cutoff = datetime.datetime.utcnow() - REFRESH_STALE_AFTER
+    """One tick's worth of re-checks: the oldest-checked links past their staleness
+    window, capped at REFRESH_BATCH_SIZE. Returns (discord_id, outcome) pairs for the
+    caller to log — deliberately returns rather than logs, so the service stays free of
+    the cog's logging conventions and is testable without capturing output.
+
+    Two windows rather than one (see REFRESH_PENDING_STALE_AFTER). The fast lane is an
+    extra way in, never a replacement: the six-hour rule still applies to every row
+    regardless of tier, so a tier-less link that ages out of the pending window keeps
+    being re-checked at the normal cadence instead of dropping off the queue for good.
+
+    Ordering stays oldest-checked-first across both, which is what keeps the fast lane
+    from starving revocation without needing a reserved share of the batch: a row that
+    only qualifies via the fast lane is at most twenty minutes stale, so everything
+    eligible under the six-hour rule sorts ahead of it."""
+    now = datetime.datetime.utcnow()
     stmt = (
         select(PatreonLink)
-        .where(PatreonLink.last_checked_at <= cutoff)
+        .where(
+            or_(
+                PatreonLink.last_checked_at <= now - REFRESH_STALE_AFTER,
+                and_(
+                    PatreonLink.tier.is_(None),
+                    PatreonLink.linked_at >= now - REFRESH_PENDING_WINDOW,
+                    PatreonLink.last_checked_at <= now - REFRESH_PENDING_STALE_AFTER,
+                ),
+            )
+        )
         .order_by(PatreonLink.last_checked_at)
         .limit(REFRESH_BATCH_SIZE)
     )

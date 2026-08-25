@@ -5,19 +5,28 @@ from discord.ext import commands
 
 from db.base import async_session
 from services.battle_service import (
+    VENOM_BLAST_TRIGGER_INTEGRITY,
     BattleReport,
     BattleState,
     finalize_battle,
     resolve_attack,
     resolve_evade,
     resolve_gadget,
+    resolve_venom_blast,
     start_battle,
+    venom_blast_ready,
 )
 from services.busy import get_busy
 from services.cooldowns import format_remaining, get_remaining_seconds, set_cooldown
 from services.economy import at_boss_gate, get_or_create_user
-from services.gadget_service import list_all_owned_gadgets, list_equipped_gadgets
-from services.patreon_service import get_tier_rank
+from services.gadget_service import list_usable_gadgets
+from services.patreon_service import (
+    TIER_RANK_ARACHNID,
+    TIER_RANK_SYMBIOTE,
+    accent_for_rank,
+    get_tier_rank,
+    tier_badge,
+)
 from services.patrol_service import (
     PATROL_COOLDOWN_SECONDS,
     PatrolResult,
@@ -31,7 +40,7 @@ from services.patrol_service import (
 from services.suit_service import repair_readiness_warning
 from utils.embeds import error_embed
 from utils.icons import emoji, item_label, thumbnail
-from utils.v2_embeds import StaticView, add_field_groups
+from utils.v2_embeds import StaticView, add_field_groups, make_container
 
 # Round decisions get a full 30 seconds — this is a choice, not a reflex test. Outcomes
 # depend on which action you pick + a dice roll behind it, never on how fast you click,
@@ -88,11 +97,20 @@ def _biomorphic_cash_line(amount: int) -> str:
     """Subtext naming Biomorphic Webbing's share of a Cash value (Symbiote+ perk).
     Same shape as _crime_line — an ambient readout under the number rather than its
     own field, since it isn't separate income, just part of that number the player
-    would otherwise have no way to attribute. The badge alone carries the tier; the
-    tier's name is never spelled out (GAME_DESIGN.md §9)."""
-    badge = emoji("symbiote")
-    prefix = f"{badge} " if badge else ""
-    return f"\n-# {prefix}The webbing shook an extra ${amount:,} loose."
+    would otherwise have no way to attribute.
+
+    Attribution follows the two-glyph rule (GAME_DESIGN.md §9): the perk's own emoji
+    leads (which perk fired) and the tier badge trails (whose subscription paid for
+    it). Until 2026-08-24 the tier badge did both jobs, which meant every Symbiote
+    perk announced itself with the same glyph and none of them said which one it was.
+    The tier's name is still never spelled out. No tier_rank parameter because this
+    line only exists on a report where report.biomorphic_cash is set, and that field
+    can only be set at Symbiote."""
+    glyph = emoji("biomorphic_webbing")
+    lead = f"{glyph} " if glyph else ""
+    badge = tier_badge(TIER_RANK_SYMBIOTE)
+    trail = f" {badge}" if badge else ""
+    return f"\n-# {lead}The webbing shook an extra ${amount:,} loose.{trail}"
 
 
 def _webbing_note(biomorphic: bool) -> str:
@@ -100,10 +118,17 @@ def _webbing_note(biomorphic: bool) -> str:
     running. Organic and Biomorphic aren't two perks that stack — Biomorphic is what
     Organic grows into, so a Symbiote subscriber has no Organic Webbing to speak of
     any more and shouldn't be told a lower tier's perk is what saved them the vial.
-    Badge only, never the tier name (GAME_DESIGN.md §9)."""
-    badge = emoji("symbiote" if biomorphic else "arachnid") or ""
+
+    Perk glyph leads, tier badge trails, tier name never spelled out (GAME_DESIGN.md
+    §9). This one does spell out the *perk's* name, deliberately: it's the only place a
+    player learns which grade of webbing they're running, and the two grades are the
+    whole point of the line."""
+    glyph = emoji("biomorphic_webbing" if biomorphic else "organic_webbing")
+    lead = f"{glyph} " if glyph else ""
     name = "Biomorphic Webbing" if biomorphic else "Organic Webbing"
-    return f"{badge} {name} — no vial needed".strip()
+    badge = tier_badge(TIER_RANK_SYMBIOTE if biomorphic else TIER_RANK_ARACHNID)
+    trail = f" {badge}" if badge else ""
+    return f"{lead}{name} — no vial needed{trail}"
 
 
 def _cap(name: str) -> str:
@@ -137,6 +162,63 @@ class EvadeButton(discord.ui.Button):
         state = self.battle_view.state
         tier_rank = self.battle_view.tier_rank
         line = resolve_evade(state, tier_rank)
+        await self.battle_view._advance(interaction, line)
+
+
+class VenomBlastButton(discord.ui.Button):
+    """Symbiote's once-per-boss-fight charge, deployed by hand.
+
+    Only added to the row when the player is Symbiote and the fight is a boss — a
+    permanently-dead button would be advertising mid-fight, and /patreon perks is where
+    that belongs. But for someone who *does* have it, the button is present from round 1
+    in its greyed-out "Not Charged" state, because a button that only appears once the
+    condition is met can't teach anyone the condition exists. The subtext line under the
+    row spells out what charges it (see PatrolBattleView._render).
+
+    Three labels, all rendered greyed except the middle one:
+      "Venom Blast — Not Charged"  integrity still above the bar
+      "Venom Blast"                armed; the only live state
+      "Venom Blast — Spent"        already used this fight
+
+    Kept in place after it's spent rather than dropped, so the row never reflows under a
+    player mid-click and turns their Evade into something else.
+
+    style is secondary because it's the only style left — Attack owns danger, Evade owns
+    primary, gadgets own success — and it happens to be the right one anyway: grey reads
+    as inert until it isn't, which is exactly this button's life cycle.
+    """
+
+    def __init__(self, battle_view: "PatrolBattleView"):
+        state = battle_view.state
+        ready = venom_blast_ready(state, battle_view.tier_rank)
+        if state.venom_blast_used:
+            label = "Venom Blast — Spent"
+        elif ready:
+            label = "Venom Blast"
+        else:
+            label = "Venom Blast — Not Charged"
+        super().__init__(
+            label=label,
+            emoji=emoji("venom_blast") or "🕷️",
+            style=discord.ButtonStyle.secondary,
+            disabled=not ready,
+        )
+        self.battle_view = battle_view
+
+    async def callback(self, interaction: discord.Interaction):
+        state = self.battle_view.state
+        tier_rank = self.battle_view.tier_rank
+        line = resolve_venom_blast(state, tier_rank)
+        if not line:
+            # Discord won't deliver a press for a button it rendered disabled, but it can
+            # still deliver one for a button that *was* enabled on the copy of the message
+            # in front of the player — two fast clicks, or a click landing while the
+            # previous round's edit is still in flight. Refuse rather than advance a round
+            # on an empty line, and never let the charge get spent twice.
+            await interaction.response.send_message(
+                "The bond isn't charged for that.", ephemeral=True
+            )
+            return
         await self.battle_view._advance(interaction, line)
 
 
@@ -192,6 +274,11 @@ class PatrolBattleView(discord.ui.DesignerView):
         self.state = state
         self.author_id = author_id
         self.tier_rank = tier_rank
+        # Derived from the rank this view is already handed, rather than read from the
+        # ambient per-command context — same answer, one less thing to resolve. Stored
+        # because _render and _render_final both run from button/select callbacks and
+        # from on_timeout, none of which carry that context.
+        self.accent = accent_for_rank(tier_rank)
         self.message: discord.Message | None = None
         self.files: list[discord.File] = []
         self._render(banner=intro_banner)
@@ -223,7 +310,7 @@ class PatrolBattleView(discord.ui.DesignerView):
         tier, tier_icon_key = self._tier()
         round_num = min(self.state.round_number, self.state.max_rounds)
 
-        container = discord.ui.Container()
+        container = make_container(self.accent)
         header_text = f"# Patrol Battle — Round {round_num}/{self.state.max_rounds}"
         if banner:
             header_text += f"\n{banner}"
@@ -256,7 +343,33 @@ class PatrolBattleView(discord.ui.DesignerView):
 
         container.add_separator()
         if self.state.outcome_key == "boss":
-            container.add_row(AttackButton(self, disabled=False), EvadeButton(self, disabled=False))
+            # Venom Blast rides in the same row as the two core actions rather than a row
+            # of its own — it's a third choice for the round, not a mode. Symbiote only, so
+            # the row is two buttons wide for everyone else and nothing shifted for them.
+            actions: list[discord.ui.Button] = [
+                AttackButton(self, disabled=False),
+                EvadeButton(self, disabled=False),
+            ]
+            if self.tier_rank >= TIER_RANK_SYMBIOTE:
+                actions.append(VenomBlastButton(self))
+            container.add_row(*actions)
+            if self.tier_rank >= TIER_RANK_SYMBIOTE and not self.state.venom_blast_used:
+                # Only while the charge is unspent, and only ever an explanation of the bar
+                # — never a nudge to press it. The perk glyph leads and the tier badge
+                # trails, per GAME_DESIGN.md §9.
+                blast_glyph = emoji("venom_blast")
+                lead = f"{blast_glyph} " if blast_glyph else ""
+                badge = tier_badge(self.tier_rank)
+                trail = f" {badge}" if badge else ""
+                if venom_blast_ready(self.state, self.tier_rank):
+                    note = "The bond is charged. One shot, this fight only."
+                else:
+                    note = (
+                        "The bond charges at "
+                        f"{VENOM_BLAST_TRIGGER_INTEGRITY}% suit integrity or lower."
+                    )
+                container.add_separator(divider=False)
+                container.add_text(f"-# {lead}{note}{trail}")
             usable_gadgets = [
                 (key, name)
                 for key, name in self.state.available_gadgets
@@ -306,7 +419,7 @@ class PatrolBattleView(discord.ui.DesignerView):
             headline = f"{_cap(self.state.enemy_name)} is still standing — you disengage."
             badge_style = discord.ButtonStyle.danger
 
-        container = discord.ui.Container()
+        container = make_container(self.accent)
         accessory, file = self._header_accessory(result_icon_key, result_label, badge_style)
         container.add_section(discord.ui.TextDisplay(f"# Patrol Battle — {tier} — Over\n{headline}"), accessory=accessory)
         self.files = [file] if file else []
@@ -322,9 +435,17 @@ class PatrolBattleView(discord.ui.DesignerView):
         field_groups = [("Outcome", outcome_fields)]
 
         if report.photo_banked:
-            camera_label = item_label("camera", "Camera")
-            caught = f"{camera_label} broke mid-shot!" if report.camera_broke else "Photo saved for the Bugle."
-            camera_emoji = emoji("camera")
+            # The camera that actually took the shot, not a hardcoded "camera" — a
+            # subscriber shooting on a $3,000 Gold body was being shown the beat-up 35mm
+            # everywhere a photo came up. finalize_battle resolves it (through the live
+            # tier check), so a lapsed pledge correctly falls back to the stock body here
+            # as well as in the stats.
+            caught = (
+                f"{report.camera_label} broke mid-shot!"
+                if report.camera_broke
+                else "Photo saved for the Bugle."
+            )
+            camera_emoji = emoji(report.camera_item_key)
             quality = report.photo_quality.title()
             heading = f"{camera_emoji} {quality} Photo Op" if camera_emoji else f"{quality} Photo Op"
             # One row (just `caught`) keeps the old bold-heading layout untouched; the
@@ -332,23 +453,31 @@ class PatrolBattleView(discord.ui.DesignerView):
             # a premium perk firing should visibly restructure the card, not hide in it.
             photo_rows = []
             if report.photo_quality_bumped:
-                # The Silver camera's headline perk. It rolls invisibly and, before
+                # The paid camera's headline perk. It rolls invisibly and, before
                 # this, changed nothing the player could see — the photo was just
                 # quietly worth more at /bugle sell time. Now it gets a labelled row
                 # with the before -> after tiers spelled out and the tier badge per
                 # GAME_DESIGN.md §9. before_bump is only ever set on a real tier
                 # change, so this can't print "Gold -> Gold".
-                arachnid = emoji("arachnid") or ""
+                #
+                # Badge and lens both follow the player: this used to hardcode Arachnid
+                # and "the silver lens", which told a Symbiote subscriber on a Gold body
+                # that somebody else's tier and somebody else's camera had done the work.
+                badge = tier_badge(self.tier_rank)
                 photo_rows.append((
-                    f"{arachnid} Photo Upgraded".strip(),
-                    f"{report.photo_quality_before_bump.title()} → **{quality}** — the silver lens "
-                    f"caught detail the stock camera would have thrown away.",
+                    f"{badge} Photo Upgraded".strip(),
+                    f"{report.photo_quality_before_bump.title()} → **{quality}** — {report.camera_label} "
+                    f"caught detail the stock body would have thrown away.",
                 ))
             photo_rows.append(("", caught))
             if report.biomorphic_photo:
-                symbiote = emoji("symbiote") or ""
+                # Perk glyph leads the heading, tier badge trails it — same two-glyph rule
+                # as _biomorphic_cash_line. This used to lead with the tier badge, which
+                # made it indistinguishable from the Photo Upgraded row directly above.
+                glyph = emoji("biomorphic_webbing") or ""
+                badge = tier_badge(self.tier_rank)
                 photo_rows.append((
-                    f"{symbiote} Second Shot".strip(),
+                    f"{glyph} Second Shot {badge}".strip(),
                     "The webbing kept shooting after you'd stopped — a second photo banked too.",
                 ))
             field_groups.append((heading, photo_rows))
@@ -366,9 +495,14 @@ class PatrolBattleView(discord.ui.DesignerView):
                 # Byte-identical to an ordinary drop before this — the whole perk was
                 # a component appearing that otherwise wouldn't have, with nothing
                 # saying so. Only fires when the base scavenge roll missed.
-                badge = emoji("symbiote")
-                prefix = f"{badge} " if badge else ""
-                found_label += f"\n-# {prefix}You'd have walked right past it — the webbing caught it."
+                # Perk glyph leads, tier badge trails (GAME_DESIGN.md §9).
+                glyph = emoji("biomorphic_webbing")
+                lead = f"{glyph} " if glyph else ""
+                badge = tier_badge(self.tier_rank)
+                trail = f" {badge}" if badge else ""
+                found_label += (
+                    f"\n-# {lead}You'd have walked right past it — the webbing caught it.{trail}"
+                )
             field_groups.append(("Scavenged", [("", found_label)]))
 
         if report.gadgets_broken:
@@ -436,7 +570,7 @@ class PatrolBattleView(discord.ui.DesignerView):
             user = await get_or_create_user(session, self.author_id)
             report = await finalize_battle(session, user, self.state, tier_rank=self.tier_rank)
             await set_cooldown(session, self.author_id, "patrol", PATROL_COOLDOWN_SECONDS)
-            suit_warning = await repair_readiness_warning(session, user)
+            suit_warning = await repair_readiness_warning(session, user, self.tier_rank)
 
         self.stop()
         self._render_final(report, suit_warning)
@@ -556,14 +690,17 @@ class PatrolCog(commands.Cog):
             if not is_combat:
                 result = await finish_noncombat_patrol(session, user, start, tier_rank)
                 await set_cooldown(session, user.discord_id, "patrol", PATROL_COOLDOWN_SECONDS)
-                suit_warning = await repair_readiness_warning(session, user)
+                suit_warning = await repair_readiness_warning(session, user, tier_rank)
                 noncombat_view = _noncombat_view(result, suit_warning)
                 await ctx.respond(view=noncombat_view, files=noncombat_view.files)
                 return
 
             base_xp = compute_base_xp(start)
-            gadget_source = list_all_owned_gadgets if boss_bracket else list_equipped_gadgets
-            equipped = await gadget_source(session, user.discord_id)
+            # Usable, not merely equipped: a gadget the player's lapsed pledge has switched
+            # off must not get a button. It would roll through roll_gadget_effect, get
+            # filtered there, and fall through to the fumble branch every single time —
+            # which reads as the gadget being broken rather than the perk being revoked.
+            equipped = await list_usable_gadgets(session, user.discord_id, all_owned=bool(boss_bracket))
             available_gadgets = []
             for inv_item in equipped:
                 item_def = await inv_item.awaitable_attrs.item

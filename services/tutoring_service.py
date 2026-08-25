@@ -7,9 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import User
 from services.ally_service import earnings_penalty_multiplier, reputation_xp_multiplier
+from services.biomorphic_service import ACTIVITY_TUTORING, AmbientScavenge, roll_ambient_scavenge
 from services.economy import add_reputation, add_wallet
 from services.gadget_service import roll_gadget_effect
 from services.loot_tables import LOOT_TABLES, rand_range
+from services.patreon_service import TIER_RANK_NONE
 
 TUTORING_LOCK_SECONDS = 2 * 60
 
@@ -32,9 +34,14 @@ class TutoringResult:
     jam_flavor: str | None = None
     jam_handled: bool = False
     jam_cash: int = 0
+    # Biomorphic Webbing's ambient pickup (Symbiote+). None both for non-subscribers and
+    # for a missed roll — see biomorphic_service.roll_ambient_scavenge.
+    scavenged: AmbientScavenge | None = None
 
 
-async def run_tutoring_session(session: AsyncSession, user: User) -> TutoringResult:
+async def run_tutoring_session(
+    session: AsyncSession, user: User, tier_rank: int = TIER_RANK_NONE
+) -> TutoringResult:
     data = LOOT_TABLES["tutoring"]
 
     xp_multiplier = await reputation_xp_multiplier(session, user.discord_id)
@@ -70,6 +77,10 @@ async def run_tutoring_session(session: AsyncSession, user: User) -> TutoringRes
     actual_xp = await add_reputation(session, user, xp)
     await session.commit()
 
+    # After the commit above, deliberately: the pickup is a bonus riding on a session that
+    # already happened, so it must never be able to take the session down with it.
+    scavenged = await roll_ambient_scavenge(session, user.discord_id, tier_rank, ACTIVITY_TUTORING)
+
     return TutoringResult(
         cash=cash,
         xp=actual_xp,
@@ -80,4 +91,5 @@ async def run_tutoring_session(session: AsyncSession, user: User) -> TutoringRes
         jam_flavor=jam_flavor,
         jam_handled=jam_handled,
         jam_cash=jam_cash,
+        scavenged=scavenged,
     )
