@@ -164,6 +164,16 @@ TOPICS = [
         ),
     },
     {
+        "key": "invite",
+        "emoji": icon_emoji("web_shooters") or "➕",
+        "title": "Add the Bot",
+        "summary": "Bring him to your own server.",
+        "body": (
+            "`/invite` — the install link, as a button. Asks for no special permissions.\n\n"
+            "Your profile is per-person, not per-server: cash, gear and streak come with you."
+        ),
+    },
+    {
         "key": "loop",
         "emoji": "🔄",
         "title": "The Loop, Start to Finish",
@@ -219,8 +229,10 @@ class OverviewButton(discord.ui.Button):
 
 class HelpBrowserView(discord.ui.DesignerView):
     """Dropdown jumps straight to any topic instead of paging through them one by
-    one — with 12 topics, Prev/Next would mean clicking through most of them just
-    to reach the one you want."""
+    one — at this many topics, Prev/Next would mean clicking through most of them
+    just to reach the one you want. (No count quoted on purpose: the old one said
+    12 and had already gone stale.) Discord caps a Select at 25 options, which is
+    the real ceiling on TOPICS."""
 
     def __init__(self, author_id: int, timeout: float = 180, accent: int | None = None):
         super().__init__(timeout=timeout)

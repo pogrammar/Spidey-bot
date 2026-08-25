@@ -54,6 +54,7 @@ EXTENSIONS = [
     "cogs.health_cog",
     "cogs.tunnel_cog",
     "cogs.ads_cog",
+    "cogs.invite_cog",
 ]
 
 

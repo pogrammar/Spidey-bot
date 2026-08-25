@@ -76,7 +76,11 @@ _PRUNE_THRESHOLD = 1000
 # a "subscribe to Patreon" card under /patreon subscribe reads like the bot isn't
 # paying attention. Group names cover their subcommands (qualified_name is
 # "patreon subscribe"), so listing the group skips all of them at once.
-SKIP_COMMANDS = {"start"}
+#
+# /invite is here for the same reason as /patreon: it's already an ask, with its own link
+# button. Following it with a second card asking for something else turns one request into
+# two in a row, which is the exact impression this feature has to avoid.
+SKIP_COMMANDS = {"start", "invite"}
 SKIP_GROUPS = {"patreon"}
 
 DEST_SERVER = "server"
