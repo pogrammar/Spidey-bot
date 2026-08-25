@@ -97,10 +97,18 @@ class InviteCog(commands.Cog):
     @discord.slash_command(
         name="invite",
         description="Add this bot to your own server.",
-        # Explicit for the same reason /start is: this is a link somebody may well want to
-        # grab in a DM rather than in front of a channel, and the card says nothing about
-        # the caller, so there's no reason to make them run it in public.
-        contexts={discord.InteractionContextType.guild, discord.InteractionContextType.bot_dm},
+        # No `contexts=` on purpose. pycord's default already serialises to
+        # [BOT_DM, PRIVATE_CHANNEL, GUILD], so declaring {guild, bot_dm} bought nothing
+        # and only dropped PRIVATE_CHANNEL — while making this the one command in the
+        # project sending a non-default value. Omitting it matches every other cog.
+        #
+        # Worth being precise about what this did NOT cause: guild is 0 and the old
+        # payload was [1, 0], so guilds were always included. When this first shipped it
+        # appeared in DMs only, and the explicit contexts looked like the culprit — it
+        # wasn't. A newly-registered *global* command is live in DMs immediately while
+        # each guild's command list catches up separately, so DM-first is the expected
+        # shape of a fresh global sync, not a misdeclaration. /start carries the same
+        # redundant kwarg and is equally unaffected, which is why it's left alone.
     )
     async def invite(self, ctx: discord.ApplicationContext):
         # Public, not ephemeral — matching /patreon subscribe. One person asking is how
