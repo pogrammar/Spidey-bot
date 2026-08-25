@@ -1,8 +1,30 @@
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+_ROOT = Path(__file__).resolve().parent
+
+# Precedence: real process environment > local.env > .env.
+#
+# Features get tested on a separate bot application, so which token is on disk decides
+# which bot you connect as — the deployed host carries only .env (the live bot), a dev
+# machine adds local.env (the tester bot). Nobody has to edit .env and remember to put it
+# back, which is the version of this that eventually connects a work-in-progress build as
+# the live bot.
+#
+# The ordering is the whole mechanism, and it's the reverse of what it looks like:
+# load_dotenv does *not* overwrite a name that's already set, so whichever file is loaded
+# FIRST wins. Hence local.env first. Don't "fix" this by reordering them or by reaching
+# for override=True — override=True would also stomp variables set in the real
+# environment, and the scratch check scripts rely on exporting SPIDEY_DB_URL to a throwaway
+# sqlite file before importing anything. Under override=True a local.env with its own
+# SPIDEY_DB_URL would silently redirect those checks at the real database.
+#
+# Missing files are a no-op, so this is safe on a host that has neither and injects its
+# environment directly.
+load_dotenv(_ROOT / "local.env")
+load_dotenv(_ROOT / ".env")
 
 DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]
 
