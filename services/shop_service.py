@@ -130,7 +130,8 @@ async def buy_item(session: AsyncSession, user: User, item_key: str) -> tuple[bo
         if tier_rank < min_rank:
             return False, (
                 f"{item_label(item.key, item.name)} is a {tier_requirement_label(min_rank)} "
-                f"Patreon perk. Subscribe and link your account with /patreon link to buy it."
+                f"Patreon perk. /patreon subscribe has the tiers; /patreon link connects a "
+                f"pledge you already have."
             )
 
     if item.category == "tool":

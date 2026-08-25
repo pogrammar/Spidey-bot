@@ -152,6 +152,18 @@ TOPICS = [
         ),
     },
     {
+        "key": "patreon",
+        "emoji": icon_emoji("arachnid") or "🕷️",
+        "title": "Patreon Perks",
+        "summary": "Two subscriber tiers, and how to connect one.",
+        "body": (
+            "`/patreon subscribe` — the two tiers and exactly what each one gets you.\n\n"
+            "`/patreon link` — connect a pledge you already have. Perks switch on by themselves.\n\n"
+            "`/patreon perks` — what's live for you right now, and what gear you haven't bought yet.\n\n"
+            "`/patreon status` / `/patreon unlink` — the raw tier the bot reads, and how to disconnect."
+        ),
+    },
+    {
         "key": "loop",
         "emoji": "🔄",
         "title": "The Loop, Start to Finish",

@@ -2,6 +2,10 @@
 __pycache__/
 *.pyc
 .env
+# Any other env file too — local.env holds the tester bot's token, and a leaked
+# bot token is an immediate takeover. .env.example doesn't match this (it ends in
+# .example) so the template still gets committed.
+*.env
 *.db
 .claude
 bin/

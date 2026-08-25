@@ -7,10 +7,12 @@ from sqlalchemy import select
 
 from db.base import async_session
 from db.models import InventoryItem, PatreonLink
-from services.battle_service import VENOM_BLAST_TRIGGER_INTEGRITY
+from services.ally_service import ARACHNID_ALLY_DECAY_INCREASE
+from services.battle_service import ENHANCED_STRENGTH_DAMAGE_BONUS, VENOM_BLAST_TRIGGER_INTEGRITY
 from services.patreon_service import (
     GATED_ITEM_KEYS,
     GATED_ITEM_MIN_RANK,
+    PATREON_PAGE_URL,
     TIER_RANK_ARACHNID,
     TIER_RANK_LABELS,
     TIER_RANK_NONE,
@@ -29,7 +31,7 @@ from services.shakedown_service import (
 )
 from utils import webapp
 from utils.icons import emoji, item_label
-from utils.v2_embeds import StaticView
+from utils.v2_embeds import StaticView, static_container
 
 # NOTE: Accelerated Growth (Reputation XP boost / Supportive Allies) is
 # deliberately NOT wired to Patreon tiers — that mechanic belongs to the
@@ -113,13 +115,14 @@ BIOMORPHIC_WEBBING_LINE = _glyph(
 )
 
 ARACHNID_PERKS = [
-    "Enhanced Strength — +30% Attack damage on crime-tier patrols.",
+    f"Enhanced Strength — +{round(ENHANCED_STRENGTH_DAMAGE_BONUS * 100)}% Attack damage on "
+    f"crime-tier patrols.",
     "Combat-Ready Patrols — better odds of landing a crime encounter.",
 ]
 ARACHNID_DRAWBACKS = [
-    "The people who know Peter Parker are holding onto him harder — happiness decays "
-    "50% faster, so a full meter runs dry in 16 hours instead of 24. Keep showing up "
-    "as Peter, or there won't be much Peter left to come back to.",
+    f"The people who know Peter Parker are holding onto him harder — happiness decays "
+    f"{round(ARACHNID_ALLY_DECAY_INCREASE * 100)}% faster, so a full meter runs dry in 16 hours "
+    f"instead of 24. Keep showing up as Peter, or there won't be much Peter left to come back to.",
 ]
 # Venom Blast became a button the player presses on 2026-08-24, and this line has to say so:
 # a perk you have to deploy is worth nothing to a subscriber who doesn't know it's there. The
@@ -246,9 +249,17 @@ def _perk_sections(
     count existed. Only read when the viewer is Symbiote, since that's the only tier the
     line renders for at all."""
     if tier_rank == TIER_RANK_NONE:
+        # Both halves matter, because this one branch answers two different situations:
+        # /patreon perks for somebody who never linked, and the welcome DM for somebody who
+        # linked with no pledge on the account (see NO_PLEDGE_INTRO). Naming both commands
+        # covers either without having to know which one is reading it. The old copy named
+        # /patreon link only, which is the wrong instruction for the first case and the
+        # already-done one for the second.
         return [(
             None,
-            [("No active perks", "Subscribe at Arachnid or Symbiote and run /patreon link to connect.")],
+            [("No active perks", "Nothing's live yet. `/patreon subscribe` has the two tiers and "
+                                 "what each one gets you; `/patreon link` connects a pledge you "
+                                 "already have.")],
         )]
 
     is_symbiote = tier_rank >= TIER_RANK_SYMBIOTE
@@ -310,6 +321,159 @@ def build_welcome_view(
     return StaticView(title, description=intro, field_groups=field_groups, icon_key=icon_key)
 
 
+# --- /patreon subscribe ------------------------------------------------------------
+#
+# The pitch card, for people who haven't pledged yet. Everything it promises is read from
+# the same constants /patreon perks and the welcome DM render, so the sales copy physically
+# cannot outrun what the code does — that's the whole reason this isn't a hand-written
+# paragraph. A perk changing wording changes it here too, with no second edit.
+#
+# This is also the ONE surface allowed to spell tier names out in text. GAME_DESIGN §9's
+# emoji-only rule governs *attribution* — "which subscription made this happen" — where the
+# name adds nothing the badge doesn't already say. A catalog is the opposite case: you can't
+# sell somebody a tier you won't name, and the name has to match what they'll read on
+# Patreon's own checkout page. Names come from TIER_RANK_LABELS rather than being typed, so
+# they can't drift from the rest of the bot.
+SUBSCRIBE_INTRO = "Two tiers. Everything under one switches itself on the moment the pledge lands."
+
+# One line per perk, and that is a hard constraint on this card, not a style preference.
+# /patreon perks is read by somebody who has already paid and wants the detail; this is read
+# by somebody deciding whether to, and a wall of paragraphs is a wall they bounce off. So the
+# long copy above is NOT reused here — these are deliberately separate, terse lines.
+#
+# Which means the one risk this card had solved is back: two descriptions of the same perk
+# that can drift apart. Two things hold them together. Every number is interpolated from the
+# same constant the long line uses, so a rate change can't leave a stale figure here. And
+# scratch/check_patreon_subscribe.py asserts count parity against the long lists, so adding a
+# perk to ARACHNID_PERKS or _symbiote_perks without writing its one-liner fails a check
+# instead of silently shipping a tier that undersells itself.
+#
+# Bold the perk name, plain the payoff — the name is what somebody skimming is matching
+# against, so it has to survive being skimmed.
+PITCH_ARACHNID = [
+    _glyph("organic_webbing", "**Organic Webbing** — Never Worry about web fluid again!"),
+    f"**Enhanced Strength** — Punches land ALOT harder.",
+    "**More Combat-Only Patrols** — more crime, more often.",
+]
+PITCH_ARACHNID_COST = [
+    f"Ally happiness drains faster.",
+]
+PITCH_SYMBIOTE = [
+    _glyph("biomorphic_webbing", "**BIOMORPHIC webbing** — Some kind of Alien biotechnology, it does everything Organic did and assists you when you need it."),
+    _glyph("venom_blast", "**VENOM BLAST** — Once per boss fight, the hit that would take you down gets absorbed, you blast back twice as hard."),
+    _glyph("stealth_mode", "**Stealth Mode** — /shakedown-proof while you're away for 20+ minutes."),
+]
+PITCH_SYMBIOTE_COST = [
+    "The suit hijacks the odd Dodge or gadget press (occasionally).",
+    # Not a perk line — the pointer that keeps the drawbacks stacking the way the perks do,
+    # without reprinting Arachnid's. Excluded from the parity check for that reason.
+    "Plus the Arachnid cost above.",
+]
+
+SUBSCRIBE_FOOTER_LINES = [
+    "Gear is unlocked *to buy* in `/shop browse`, not handed over. ",
+    "Already pledged? `/patreon link`. Perks stop if the pledge does.",
+]
+
+
+def _tier_gear(tier_rank: int) -> list[str]:
+    """The gated purchasables a tier opens up *for the first time*.
+
+    Exact-rank match, NOT the usual `>=` — this answers "which tier introduces this item",
+    the same question accent_for_rank asks, not "who may buy it". With `>=` the Silver
+    camera would appear under Symbiote as well, which reads as two separate unlocks and
+    undersells the higher tier by padding it with the lower one's list. The section copy
+    says Symbiote inherits everything above, so a repeat would be wrong twice over.
+
+    Safe as an equality check because GATED_ITEM_MIN_RANK's values can only ever be one of
+    the two paid ranks, and both are pitched below — a gated item can't fall through.
+    """
+    return [
+        item_label(key, GATED_ITEM_LABELS.get(key, key))
+        for key, min_rank in GATED_ITEM_MIN_RANK.items()
+        if min_rank == tier_rank
+    ]
+
+
+def _eyebrow(label: str) -> str:
+    """The same small-caps category tag _add_group renders above a multi-field group, for
+    use *inside* one field's own text.
+
+    This card has a two-level hierarchy — tier, then category within the tier — and
+    _add_group only models one. Handing it three fields per tier gets the weights exactly
+    backwards: the tier name drops to the small grey eyebrow while "What it costs you"
+    renders bold above it, so the sub-label shouts over the thing being sold. So each tier
+    is one field instead, with its categories nested in here at eyebrow weight. That keeps
+    the project's visual vocabulary intact (bold = this block's own label, `-# UPPER` = a
+    category tag inside it) rather than inventing a third style for one card.
+    """
+    return f"-# {label.upper()}"
+
+
+def _pitch_sections() -> list[tuple[str | None, list[tuple[str, str]]]]:
+    """One section per paid tier: its perks, its cost, its gear — all as one-liners.
+
+    Cost sits inside the tier's own block rather than in a pooled section at the bottom, so
+    the upside can't be read without the downside in the same breath. Symbiote's leads with
+    an "everything in Arachnid, plus" eyebrow rather than restating the lower tier's lines.
+    """
+    arachnid_label = TIER_RANK_LABELS[TIER_RANK_ARACHNID]
+
+    tiers = (
+        (TIER_RANK_ARACHNID, None, PITCH_ARACHNID, PITCH_ARACHNID_COST),
+        (TIER_RANK_SYMBIOTE, f"Everything in {arachnid_label}, plus", PITCH_SYMBIOTE, PITCH_SYMBIOTE_COST),
+    )
+
+    sections = []
+    for tier_rank, lead_in, perks, drawbacks in tiers:
+        blocks = [_eyebrow(lead_in)] if lead_in else []
+        blocks += [_bullets(perks), _eyebrow("What it costs you"), _bullets(drawbacks)]
+        gear = _tier_gear(tier_rank)
+        if gear:
+            blocks += [_eyebrow("Gear it unlocks"), _bullets(gear)]
+        # tier_badge, not tier_requirement_badges: the section *is* this tier, so its own
+        # badge belongs on it — the header isn't describing a gate that several tiers clear.
+        heading = f"{tier_badge(tier_rank)} {TIER_RANK_LABELS[tier_rank]}".strip()
+        # Empty field name on purpose: that's the branch of _add_group that merges heading
+        # and value into one bold-labelled block, which is what makes the tier name the
+        # loudest thing in its own section.
+        sections.append((heading, [("", "\n".join(blocks))]))
+
+    return sections
+
+
+class SubscribeView(discord.ui.DesignerView):
+    """The pitch card with a link button to the Patreon page inside the container.
+
+    Bespoke rather than a StaticView because StaticView is explicitly the no-buttons case,
+    and the button has to live *inside* the container or it renders detached from the card
+    it belongs to. Everything above the button is still built by static_container, so the
+    header, the group dividers and the tier accent behave identically to every other panel.
+
+    timeout=None for the same reason LinkButtonView uses it: a link button has no callback
+    to expire, so there's nothing for a timeout to protect.
+    """
+
+    def __init__(self):
+        super().__init__(timeout=None)
+        container, file = static_container(
+            "Back the Bot",
+            description=SUBSCRIBE_INTRO,
+            field_groups=_pitch_sections(),
+            icon_key="arachnid",
+        )
+        container.add_separator()
+        container.add_text("\n".join(f"-# {line}" for line in SUBSCRIBE_FOOTER_LINES))
+        container.add_separator()
+        container.add_row(
+            discord.ui.Button(
+                label="Subscribe on Patreon", style=discord.ButtonStyle.link, url=PATREON_PAGE_URL
+            )
+        )
+        self.add_item(container)
+        self.files: list[discord.File] = [file] if file else []
+
+
 async def _stealth_protections(tier_rank: int, discord_id: int) -> int:
     """The Stealth Mode block count, or 0 for anyone the line won't render for anyway.
 
@@ -347,6 +511,23 @@ class PatreonCog(commands.Cog):
         webapp.app.router.add_get("/patreon/callback", self._callback)
 
     patreon = discord.SlashCommandGroup("patreon", "Link your Patreon account for perks.")
+
+    @patreon.command(name="subscribe", description="See the Patreon tiers and what each one gets you.")
+    async def subscribe(self, ctx: discord.ApplicationContext):
+        # The only non-ephemeral command in this group. Every other one reports on *your*
+        # link — private by nature, and /patreon link's URL is single-use and must never be
+        # visible to anyone else. This card contains nothing about the caller and is the one
+        # Patreon surface where being seen by the rest of the channel is the point: one
+        # person asking is how everybody else finds out the page exists. Flip it to
+        # ephemeral=True if that ever reads as advertising rather than an answer.
+        #
+        # Deliberately does not touch the DB or Patreon. The card is identical for a
+        # non-subscriber, a subscriber and a lapsed one, so branching on tier here would buy
+        # a query's worth of nothing — /patreon perks is the command that answers "what's
+        # live for me". The one tier-dependent thing on it, the accent bar, comes from the
+        # ambient context for free.
+        view = SubscribeView()
+        await ctx.respond(view=view, files=view.files)
 
     @patreon.command(name="link", description="Connect your Patreon account to unlock your perks.")
     async def link(self, ctx: discord.ApplicationContext):

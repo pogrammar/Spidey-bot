@@ -7,6 +7,7 @@ from alembic import command
 from alembic.config import Config as AlembicConfig
 
 import config
+from cogs import status_cog
 from db.base import async_session
 from db.seed import seed_items
 from utils import webapp
@@ -17,7 +18,15 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("spidey")
 
 intents = discord.Intents.default()
-bot = discord.Bot(intents=intents, debug_guilds=[config.DEV_GUILD_ID] if config.DEV_GUILD_ID else None)
+# status/activity here rather than only in StatusCog's rotation loop: these two go into
+# the IDENTIFY payload, which is what Discord falls back to whenever it resets a bot's
+# presence. See cogs.status_cog.initial_activity for why the loop can't cover that.
+bot = discord.Bot(
+    intents=intents,
+    debug_guilds=[config.DEV_GUILD_ID] if config.DEV_GUILD_ID else None,
+    status=status_cog.PRESENCE_STATUS,
+    activity=status_cog.initial_activity(),
+)
 apply_mention_patch()
 bot.before_invoke(announce_if_first_time)
 

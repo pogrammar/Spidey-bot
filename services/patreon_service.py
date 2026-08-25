@@ -20,6 +20,14 @@ TOKEN_URL = "https://www.patreon.com/api/oauth2/token"
 IDENTITY_URL = "https://www.patreon.com/api/oauth2/v2/identity"
 SCOPES = "identity identity.memberships"
 
+# The public creator page — where someone goes to *start* a pledge, as opposed to the
+# three OAuth endpoints above, which are where an existing pledge gets read. Not an API
+# endpoint and nothing here calls it; it lives beside them so every patreon.com URL in
+# the project is in one place, and so /patreon subscribe isn't the only thing that can
+# ever point at the page (a /shop refusal could too). The /c/ form is Patreon's canonical
+# creator URL and is what the vanity path redirects to.
+PATREON_PAGE_URL = "https://www.patreon.com/c/spideybotdiscord"
+
 # Pending link requests, keyed by a random state token — this is what ties a
 # Patreon callback (which only carries the state back) to the Discord user who
 # actually ran /patreon link. In-memory is a deliberate tradeoff: a bot restart
