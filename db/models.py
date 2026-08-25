@@ -48,6 +48,12 @@ class User(Base):
     # second one). Powers Stealth Mode's inactivity window — see
     # services/shakedown_service.py.
     last_active_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    # How many promo cards this user has been shown — see services/ads_service.py. Only
+    # its parity is read (even -> Discord server, odd -> Patreon), so the two destinations
+    # stay exactly balanced per user instead of merely balanced on average, which is what
+    # a 50/50 coin flip would give. Persisted rather than in-memory so a restart doesn't
+    # reset everyone to the same destination and skew the split.
+    ad_impressions: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     inventory_items: Mapped[list["InventoryItem"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"

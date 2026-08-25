@@ -53,6 +53,7 @@ EXTENSIONS = [
     "cogs.heartbeat_cog",
     "cogs.health_cog",
     "cogs.tunnel_cog",
+    "cogs.ads_cog",
 ]
 
 
