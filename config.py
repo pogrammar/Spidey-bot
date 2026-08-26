@@ -61,6 +61,16 @@ PATREON_CLIENT_ID = os.environ.get("PATREON_CLIENT_ID", "").strip() or None
 PATREON_CLIENT_SECRET = os.environ.get("PATREON_CLIENT_SECRET", "").strip() or None
 PATREON_REDIRECT_URI = os.environ.get("PATREON_REDIRECT_URI", "").strip() or None
 
+# Numeric id of *our* campaign — https://www.patreon.com/api/oauth2/v2/campaigns with a
+# creator token, or the id in the creator dashboard URL. Optional, and the reason it exists
+# is narrow: SCOPES asks for identity.memberships, which per Patreon's docs makes the
+# identity endpoint return the user's memberships to *every* campaign they back, so the
+# response carries other creators' tiers alongside ours. Setting this lets _extract_tier
+# discard those outright instead of relying on the tier titles below not colliding with
+# somebody else's. Unset, tier resolution falls back to matching on title alone, which is
+# correct but not airtight — see services/patreon_service.py's _entitled_tier_titles.
+PATREON_CAMPAIGN_ID = os.environ.get("PATREON_CAMPAIGN_ID", "").strip() or None
+
 # Exact tier titles as configured on the actual Patreon page — PatreonLink.tier
 # stores whatever Patreon's API returns for a patron's tier title verbatim, so
 # these have to match character-for-character. Kept in .env (not hardcoded) so a

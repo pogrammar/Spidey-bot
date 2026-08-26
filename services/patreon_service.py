@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import logging
 import secrets
 import time
 from dataclasses import dataclass
@@ -15,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import config
 from db.models import PatreonLink
 from utils.icons import emoji
+
+log = logging.getLogger("spidey")
 
 AUTHORIZE_URL = "https://www.patreon.com/oauth2/authorize"
 TOKEN_URL = "https://www.patreon.com/api/oauth2/token"
@@ -294,13 +297,115 @@ async def unlink_account(session: AsyncSession, discord_id: int) -> tuple[bool, 
     return True, "Unlinked. This doesn't cancel your actual Patreon pledge — that's managed on Patreon's own platform."
 
 
-def _extract_tier(identity: dict) -> str | None:
-    """First currently-entitled tier from the identity response's `included` array,
-    or None if the account has no active pledge (still a valid, linked state)."""
+def _identity_params() -> dict[str, str]:
+    """The query both identity reads share — the link path and the refresh loop want the
+    same thing, and had drifted into two hand-maintained copies of it.
+
+    The base request is deliberately the minimum that works. A query Patreon rejects comes
+    back 400, which reads as "couldn't read your tier" on the link path and fails open on
+    the refresh path — so a bad param here costs every subscriber their tier at once. The
+    campaign-scoped extras therefore only appear once PATREON_CAMPAIGN_ID is set, making
+    that one setting the whole opt-in to the stricter request.
+    """
+    params = {
+        "include": "memberships.currently_entitled_tiers",
+        # API v2 strips a resource down to just type+id unless its fields
+        # are explicitly requested — without this, the tier relationship
+        # was present but its title attribute came back empty, which
+        # _extract_tier() couldn't tell apart from "no tier at all".
+        "fields[tier]": "title",
+    }
+    if config.PATREON_CAMPAIGN_ID:
+        # campaign is what says which of several memberships is ours. The member fields are
+        # pure diagnostics for the no-tier log line below: without last_charge_status a
+        # declined card looks exactly like a cancelled pledge.
+        params["include"] += ",memberships.campaign"
+        params["fields[member]"] = "patron_status,last_charge_status,is_free_trial"
+    return params
+
+
+def _our_campaign_tier_ids(identity: dict) -> set[str] | None:
+    """Ids of the tiers entitled through *our* campaign's membership, or None if the
+    response can't say.
+
+    None means "no campaign restriction available", never "no tiers" — the caller falls back
+    to matching on title. That distinction is the safety property here: PATREON_CAMPAIGN_ID
+    is optional, and a response shaped differently than expected must degrade to the old
+    behaviour rather than strip a paying subscriber's tier. An *empty* set is a real answer,
+    though: the linkage was readable and this account is entitled to nothing of ours.
+    """
+    campaign_id = config.PATREON_CAMPAIGN_ID
+    if not campaign_id:
+        return None
+
+    ids: set[str] = set()
+    saw_linkage = False
     for item in identity.get("included", []):
-        if item.get("type") == "tier":
-            return item.get("attributes", {}).get("title")
-    return None
+        if item.get("type") != "member":
+            continue
+        rel = item.get("relationships") or {}
+        campaign = (rel.get("campaign") or {}).get("data")
+        entitled = rel.get("currently_entitled_tiers")
+        if not isinstance(campaign, dict) or entitled is None:
+            # This membership didn't come back with the two relationships the filter is
+            # built on, so it can't be judged either way — don't let it vote.
+            continue
+        saw_linkage = True
+        if str(campaign.get("id")) != str(campaign_id):
+            continue
+        for tier in entitled.get("data") or []:
+            if tier.get("id") is not None:
+                ids.add(str(tier["id"]))
+
+    return ids if saw_linkage else None
+
+
+def _entitled_tier_titles(identity: dict) -> list[str]:
+    """Every tier title in the identity response that could plausibly be one of ours.
+
+    Narrowed to our own campaign's membership when the response carries the linkage to say
+    which membership that is; otherwise it is every tier in the response, which is what
+    makes the title match in _extract_tier load-bearing rather than a formality.
+    """
+    ours = _our_campaign_tier_ids(identity)
+    titles = []
+    for item in identity.get("included", []):
+        if item.get("type") != "tier":
+            continue
+        if ours is not None and str(item.get("id")) not in ours:
+            continue
+        title = item.get("attributes", {}).get("title")
+        if title is not None:
+            titles.append(title)
+    return titles
+
+
+def _extract_tier(identity: dict) -> str | None:
+    """The highest-ranked tier *of ours* the account is currently entitled to, or None if
+    none of them are (still a valid, linked state).
+
+    Scores every entitled tier rather than returning the first one, and that is the point of
+    this function rather than a tidy-up. SCOPES asks for identity.memberships, which per
+    Patreon's docs makes the identity endpoint return the user's memberships to *every*
+    campaign they back — so `included` holds other creators' tiers next to ours, in an order
+    the API does not specify. Taking the first tier read a stranger's tier title for anyone
+    who also backs somebody else, and tier_rank_from_name scores an unrecognised title as no
+    pledge: a paying Symbiote subscriber got the "linked, no active pledge" card, and because
+    the stored tier was then a non-null foreign title, refresh_link re-read the same wrong
+    value every cycle, never registered a change, and never fired the upgrade DM. It also
+    stayed out of refresh_stale_links' fast lane, which only picks up rows whose tier IS NULL.
+    Whether it broke was down to array order, which is why it survived heavy testing on an
+    account that backed nobody else.
+
+    Scoring also settles the case where Patreon reports several of our own tiers as entitled
+    at once: the highest wins, never whichever came back first.
+    """
+    best_rank, best_title = TIER_RANK_NONE, None
+    for title in _entitled_tier_titles(identity):
+        rank = tier_rank_from_name(title)
+        if rank > best_rank:
+            best_rank, best_title = rank, title
+    return best_title
 
 
 async def _holder_of(session: AsyncSession, patreon_user_id: str, except_discord_id: int) -> int | None:
@@ -347,14 +452,7 @@ async def handle_callback(session: AsyncSession, code: str, state: str) -> tuple
 
         async with http.get(
             IDENTITY_URL,
-            params={
-                "include": "memberships.currently_entitled_tiers",
-                # API v2 strips a resource down to just type+id unless its fields
-                # are explicitly requested — without this, the tier relationship
-                # was present but its title attribute came back empty, which
-                # _extract_tier() couldn't tell apart from "no tier at all".
-                "fields[tier]": "title",
-            },
+            params=_identity_params(),
             headers={"Authorization": f"Bearer {access_token}"},
         ) as resp:
             if resp.status != 200:
@@ -363,6 +461,17 @@ async def handle_callback(session: AsyncSession, code: str, state: str) -> tuple
 
     patreon_user_id = identity["data"]["id"]
     tier = _extract_tier(identity)
+    if tier is None:
+        # The one genuinely ambiguous outcome, and the reason it's logged here rather than
+        # left to the cog: a real no-pledge link and a pledge whose title doesn't match
+        # config.PATREON_*_TIER_NAME produce the identical card, and until this line existed
+        # the logs couldn't tell them apart either — which is exactly what made the
+        # foreign-tier bug _extract_tier now guards against invisible for weeks.
+        log.info(
+            "Patreon link resolved no tier: discord_id=%s candidate_titles=%r configured=%r",
+            discord_id, _entitled_tier_titles(identity),
+            (config.PATREON_ARACHNID_TIER_NAME, config.PATREON_SYMBIOTE_TIER_NAME),
+        )
     now = datetime.datetime.utcnow()
 
     # Checked before anything is written, so a refused link leaves both rows exactly as they
@@ -488,10 +597,10 @@ async def _get_identity(http: aiohttp.ClientSession, access_token: str) -> dict:
     try:
         async with http.get(
             IDENTITY_URL,
-            # Same explicit fields[tier] as handle_callback — without it the tier
-            # relationship comes back stripped to type+id and _extract_tier can't tell
-            # "no title" from "no tier", which here would read as a cancelled pledge.
-            params={"include": "memberships.currently_entitled_tiers", "fields[tier]": "title"},
+            # Same query as handle_callback, from the same builder — these two reads want
+            # identical data, and when each maintained its own copy a fix to one silently
+            # missed the other.
+            params=_identity_params(),
             headers={"Authorization": f"Bearer {access_token}"},
         ) as resp:
             if resp.status in (401, 403):
