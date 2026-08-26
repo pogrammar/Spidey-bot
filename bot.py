@@ -1,13 +1,14 @@
 import asyncio
 import logging
 from pathlib import Path
+from itertools import cycle
 
 import discord
+from discord.ext import commands, tasks
 from alembic import command
 from alembic.config import Config as AlembicConfig
 
 import config
-from cogs import status_cog
 from db.base import async_session
 from db.seed import seed_items
 from utils import webapp
@@ -18,14 +19,9 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("spidey")
 
 intents = discord.Intents.default()
-# status/activity here rather than only in StatusCog's rotation loop: these two go into
-# the IDENTIFY payload, which is what Discord falls back to whenever it resets a bot's
-# presence. See cogs.status_cog.initial_activity for why the loop can't cover that.
 bot = discord.Bot(
     intents=intents,
     debug_guilds=[config.DEV_GUILD_ID] if config.DEV_GUILD_ID else None,
-    status=status_cog.PRESENCE_STATUS,
-    activity=status_cog.initial_activity(),
 )
 apply_mention_patch()
 bot.before_invoke(announce_if_first_time)
@@ -49,7 +45,6 @@ EXTENSIONS = [
     "cogs.help_cog",
     "cogs.admin_cog",
     "cogs.patreon_cog",
-    "cogs.status_cog",
     "cogs.heartbeat_cog",
     "cogs.health_cog",
     "cogs.tunnel_cog",
@@ -57,10 +52,76 @@ EXTENSIONS = [
     "cogs.invite_cog",
 ]
 
+STREAM_URL = "https://www.twitch.tv/betchespy"
+
+# MUST be online. A Streaming activity only gets the purple "live" treatment on a
+# presence whose status is online — set idle or dnd and Discord's client renders the
+# ordinary idle/dnd dot and drops the streaming badge, so the activity is still
+# there in the payload and still invisible where anyone would look for it. This was
+# discord.Status.idle until 2026-08-25, which is most of why the bot read as a plain
+# non-streaming presence. Don't "soften" it back to idle.
+PRESENCE_STATUS = discord.Status.online
+
+STATUS_LINES = cycle([
+    "hooky from Oscorp",
+    "tag with the NYPD",
+    "hide and seek with the Sinister Six",
+    "chicken with a glider",
+    "catch with a city bus",
+    "20 questions with J. Jonah Jameson",
+    "keep-away with Doc Ock's arms",
+    "Jenga with the Chrysler Building",
+    "peekaboo with the Vulture",
+    "dodgeball with pumpkin bombs",
+    "tug-of-war with a web line",
+    "Uno with Deadpool (he's cheating)",
+    "hopscotch on bridge cables",
+    "whack-a-mole with Kingpin's goons",
+    "connect four with Electro",
+    "freeze tag with Mysterio's illusions",
+    "hide and seek (Kraven is it)",
+    "darts with Shocker (badly)",
+    "the quiet game with Venom",
+    "arm wrestling with Rhino (losing)",
+    "leapfrog over the Daily Bugle",
+    "chicken with rent day",
+    "budget hero on a sidekick's salary",
+    "landlord roulette",
+    "hooky from chemistry class",
+    "guess the villain from the headline",
+    "web fluid roulette (usually fine)",
+    "dress-up in a homemade suit",
+    "hide the black eye from Aunt May",
+    "phone tag with MJ",
+    "tourist photographer, technically",
+    "damage control, mostly on myself",
+    "extremely unpaid overtime",
+    "hooky from my responsibilities",
+    "chicken with a deadline and a villain",
+    "catch-up on 4 hours of sleep",
+    "keep the mask on straight",
+    "find the exact rent amount",
+    "good cop bad cop, badly, alone",
+    "tag, you're mugged",
+    "the world's worst internship",
+    "wall crawler, occasionally falling",
+    "hero for a city that reads the Bugle",
+    "dodge the wanted poster",
+    "who left this pumpkin bomb here",
+    "spot the difference, villain edition",
+    "web-slinger's cardio, unwillingly",
+])
+
+@tasks.loop(seconds=60) # Change status every 60 seconds
+async def change_status():
+    current_stream = next(STATUS_LINES)
+    activity = discord.Streaming(name=current_stream, url=STREAM_URL)
+    await bot.change_presence(activity=activity)
 
 @bot.event
 async def on_ready():
     log.info("Logged in as %s (id=%s). [deploy test v1]", bot.user, bot.user.id)
+    change_status.start()
 
 
 def run_migrations() -> None:
