@@ -79,11 +79,38 @@ TIER_BUTTON_STYLES = {
 }
 
 
-def _bar(current: int, maximum: int, filled_emoji: str, segments: int = 10) -> str:
-    if maximum <= 0:
-        return "⬜" * segments
-    filled = max(0, min(segments, round((current / maximum) * segments)))
-    return filled_emoji * filled + "⬜" * (segments - filled)
+# Battle bars are drawn from three-piece emoji art: a left cap, a right cap, and repeated
+# middles. So a segment's emoji depends on *where* it sits as well as whether it's filled —
+# ten segments means exactly one left cap, eight middles, and one right cap. /daily's streak
+# bar deliberately still uses the older single-piece streak_bar_filled/empty pair; these
+# capped ones are patrol-only.
+BAR_SEGMENTS = 10
+
+# Falls back to the classic squares if an end cap hasn't been uploaded as an application
+# emoji — emoji() missing has to keep meaning "render without it", never put a broken
+# reference in front of a player mid-fight.
+_BAR_FALLBACK = {"red": "🟥", "green": "🟩", None: "⬜"}
+
+
+def _bar_segment(color: str | None, position: str) -> str:
+    """One segment: `color` is "red"/"green" when filled and None when empty,
+    `position` is "left" | "middle" | "right"."""
+    prefix = "streak_bar_empty" if color is None else f"streak_bar_filled_{color}"
+    return emoji(f"{prefix}_{position}") or _BAR_FALLBACK[color]
+
+
+def _bar(current: int, maximum: int, color: str, segments: int = BAR_SEGMENTS) -> str:
+    """A capped health/integrity bar. A non-positive maximum draws an empty bar rather
+    than dividing by it — the old behaviour, kept because a blank row mid-battle beats
+    a traceback."""
+    filled = 0 if maximum <= 0 else max(0, min(segments, round((current / maximum) * segments)))
+    return "".join(
+        _bar_segment(
+            color if i < filled else None,
+            "left" if i == 0 else "right" if i == segments - 1 else "middle",
+        )
+        for i in range(segments)
+    )
 
 
 def _crime_line(crime_level: int, crime_level_delta: int) -> str:
@@ -323,12 +350,12 @@ class PatrolBattleView(discord.ui.DesignerView):
 
         container.add_text(
             f"**{_cap(self.state.enemy_name)}**\n"
-            f"{_bar(self.state.enemy_hp, self.state.enemy_max_hp, '🟥')}  "
+            f"{_bar(self.state.enemy_hp, self.state.enemy_max_hp, 'red')}  "
             f"{self.state.enemy_hp}/{self.state.enemy_max_hp} HP"
         )
         container.add_separator(divider=False)
         container.add_text(
-            f"**Your Suit**\n{_bar(self.state.suit_remaining, 100, '🟩')}  {self.state.suit_remaining}%"
+            f"**Your Suit**\n{_bar(self.state.suit_remaining, 100, 'green')}  {self.state.suit_remaining}%"
         )
 
         if self.state.combo_ready:

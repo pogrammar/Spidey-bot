@@ -77,6 +77,18 @@ EMOJI: dict[str, str] = {
     "suit_damage": "<:suit_damage:1538072500620099614>",
     "streak_bar_filled": "<:streak_bar_filled:1538072498346791064>",
     "streak_bar_empty": "<:streak_bar_empty:1538072495519957053>",
+    # Three-piece bar segments: end caps are their own art so a bar reads as one rounded
+    # object rather than ten stacked squares. Only cogs/patrol_cog.py draws with these;
+    # /daily's streak bar still uses the single-piece pair above.
+    "streak_bar_filled_red_left": "<:streak_bar_filled_red_left:1542153090667515945>",
+    "streak_bar_filled_red_middle": "<:streak_bar_filled_red_middle:1542153093016453251>",
+    "streak_bar_filled_red_right": "<:streak_bar_filled_red_right:1542153095214145648>",
+    "streak_bar_filled_green_left": "<:streak_bar_filled_green_left:1542153081804955758>",
+    "streak_bar_filled_green_middle": "<:streak_bar_filled_green_middle:1542153085218988042>",
+    "streak_bar_filled_green_right": "<:streak_bar_filled_green_right:1542153088591331378>",
+    "streak_bar_empty_left": "<:streak_bar_empty_left:1542153033666789396>",
+    "streak_bar_empty_middle": "<:streak_bar_empty_middle:1542153035730387016>",
+    "streak_bar_empty_right": "<:streak_bar_empty_right:1542153038620528710>",
     "streak": "<:streak:1538072492722098225>",
     "store": "<:store:1538072490373423154>",
     "spandex_fabric": "<:spandex_fabric:1538072488024481802>",
