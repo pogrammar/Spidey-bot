@@ -9,6 +9,7 @@ from urllib.parse import urlencode
 
 import aiohttp
 from sqlalchemy import and_, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import config
@@ -40,6 +41,23 @@ _pending: dict[str, tuple[int, float]] = {}
 
 class PatreonLinkError(Exception):
     """Raised with a message that's safe to show the user directly."""
+
+
+class PatreonAccountInUseError(PatreonLinkError):
+    """That Patreon account is already connected to a *different* Discord account.
+
+    Carries the holder's discord_id rather than their name because turning an ID into a
+    username needs the bot, and a service reaching for that is the wrong direction — the
+    callback handler in cogs/patreon_cog.py resolves it.
+
+    Subclasses PatreonLinkError on purpose: every existing `except PatreonLinkError` still
+    catches this, so a caller that hasn't been taught about it degrades to a plain refusal
+    instead of a 500. The base message is deliberately complete on its own for that reason.
+    """
+
+    def __init__(self, discord_id: int):
+        self.discord_id = discord_id
+        super().__init__("That Patreon account is already connected to another Discord account.")
 
 
 # Symbiote includes every Arachnid perk plus its own — a rank comparison
@@ -285,6 +303,21 @@ def _extract_tier(identity: dict) -> str | None:
     return None
 
 
+async def _holder_of(session: AsyncSession, patreon_user_id: str, except_discord_id: int) -> int | None:
+    """Which *other* Discord account already has this Patreon account linked, if any.
+
+    The `!=` is the whole subtlety. Two flows legitimately re-link an account and must not
+    trip this: re-running /patreon link on your own existing link, and switching to a
+    different Patreon account on the same Discord account — which cogs/patreon_cog.py's
+    link command explicitly offers, and which only ever overwrites patreon_user_id in place.
+    """
+    stmt = select(PatreonLink.discord_id).where(
+        PatreonLink.patreon_user_id == patreon_user_id,
+        PatreonLink.discord_id != except_discord_id,
+    )
+    return (await session.execute(stmt)).scalars().first()
+
+
 async def handle_callback(session: AsyncSession, code: str, state: str) -> tuple[int, str | None]:
     """Exchanges the OAuth code, reads the linking user's current tier, and upserts
     their PatreonLink row. Returns (discord_id, tier) on success. Raises
@@ -332,6 +365,15 @@ async def handle_callback(session: AsyncSession, code: str, state: str) -> tuple
     tier = _extract_tier(identity)
     now = datetime.datetime.utcnow()
 
+    # Checked before anything is written, so a refused link leaves both rows exactly as they
+    # were — the holder keeps their tier and tokens, and this user keeps whatever link they
+    # already had. One Patreon subscription granting a full tier's perks to any number of
+    # Discord accounts is what this closes; every perk check reads whichever row matches the
+    # caller (get_tier_rank), so without this they all pass.
+    holder = await _holder_of(session, patreon_user_id, discord_id)
+    if holder is not None:
+        raise PatreonAccountInUseError(holder)
+
     link = await session.get(PatreonLink, discord_id)
     if link is None:
         link = PatreonLink(discord_id=discord_id, linked_at=now)
@@ -342,7 +384,19 @@ async def handle_callback(session: AsyncSession, code: str, state: str) -> tuple
     link.refresh_token = refresh_token
     link.token_expires_at = now + datetime.timedelta(seconds=expires_in)
     link.last_checked_at = now
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        # The check above lost a race with a second callback for the same Patreon account —
+        # both read "unclaimed", both wrote. The unique index on patreon_user_id is what
+        # turns that into this exception instead of two live links, and is the reason the
+        # constraint is worth having on top of the query.
+        await session.rollback()
+        holder = await _holder_of(session, patreon_user_id, discord_id)
+        if holder is not None:
+            raise PatreonAccountInUseError(holder) from None
+        # Some other constraint, then — nothing here can name it, so don't guess.
+        raise PatreonLinkError("Couldn't save that link — run /patreon link again.") from None
 
     return discord_id, tier
 

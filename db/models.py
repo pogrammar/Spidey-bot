@@ -209,7 +209,16 @@ class PatreonLink(Base):
     __tablename__ = "patreon_links"
 
     discord_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.discord_id"), primary_key=True)
-    patreon_user_id: Mapped[str] = mapped_column(String)
+    # Unique, so one Patreon account can't be linked to several Discord accounts and grant
+    # every tier perk to each of them — discord_id being the primary key only ever enforced
+    # the other direction. handle_callback checks this before writing and reports which
+    # account already holds it; the constraint is the backstop for two callbacks racing.
+    #
+    # index=True alongside unique=True is deliberate: it makes SQLAlchemy emit a unique
+    # *index* named ix_patreon_links_patreon_user_id, which is exactly what the migration
+    # creates. With unique=True alone a freshly created database would get an inline UNIQUE
+    # constraint while a migrated one got an index — one rule under two names.
+    patreon_user_id: Mapped[str] = mapped_column(String, unique=True, index=True)
     tier: Mapped[str | None] = mapped_column(String, nullable=True)  # None = linked but no active pledge
     # Accelerated Growth (Arachnid+ perk) — "xp" or "allies", mutually exclusive by
     # construction (one field, one value at a time). None = not chosen yet. Reset

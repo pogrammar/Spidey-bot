@@ -1,3 +1,4 @@
+import html
 import logging
 
 import discord
@@ -17,6 +18,7 @@ from services.patreon_service import (
     TIER_RANK_LABELS,
     TIER_RANK_NONE,
     TIER_RANK_SYMBIOTE,
+    PatreonAccountInUseError,
     PatreonLinkError,
     build_authorize_url,
     get_tier_rank,
@@ -659,6 +661,30 @@ class PatreonCog(commands.Cog):
                 discord_id,
             )
 
+    async def _describe_user(self, discord_id: int) -> str:
+        """Renders a Discord ID as `name (id)`, HTML-escaped and ready to interpolate.
+
+        The ID is always included, never just the name: the person reading this page is
+        being told to go unlink somewhere else, and a display name alone doesn't identify
+        an account they can find.
+
+        escape() is the load-bearing part. CALLBACK_ERROR_HTML interpolates its message
+        straight into the page, and every other message it's ever given is a literal we
+        wrote — this is the first attacker-controlled one. A display name of
+        `<script>...</script>` would otherwise be stored XSS on the tunnel domain, firing in
+        the browser of whoever next tries to link that Patreon account. Only the name is
+        escaped; the surrounding copy is ours and intentionally contains markup.
+        """
+        user = self.bot.get_user(discord_id)
+        if user is None:
+            try:
+                user = await self.bot.fetch_user(discord_id)
+            except discord.HTTPException:
+                # Deleted account, or the bot shares no server with them and the fetch was
+                # rate-limited. The ID alone is still enough for the owner to act on.
+                return f"Discord ID {discord_id}"
+        return f"{html.escape(str(user))} ({discord_id})"
+
     async def _callback(self, request: web.Request) -> web.Response:
         code = request.query.get("code")
         state = request.query.get("state")
@@ -669,6 +695,25 @@ class PatreonCog(commands.Cog):
         try:
             async with async_session() as session:
                 discord_id, tier = await handle_callback(session, code, state)
+        except PatreonAccountInUseError as exc:
+            # Must sit above the PatreonLinkError branch — it's a subclass, so the broader
+            # `except` would swallow it and drop the "which account?" detail that makes this
+            # actionable. The service can't name the holder itself: turning an ID into a
+            # username needs the bot, which a service function has no handle on.
+            log.warning(
+                "Patreon callback rejected: patreon account already linked to discord_id=%s",
+                exc.discord_id,
+            )
+            return web.Response(
+                text=CALLBACK_ERROR_HTML.format(
+                    message=(
+                        f"That Patreon account is already connected to <b>{await self._describe_user(exc.discord_id)}</b>. "
+                        "Run <code>/patreon unlink</code> on that account first, then try again."
+                    )
+                ),
+                content_type="text/html",
+                status=400,
+            )
         except PatreonLinkError as exc:
             log.warning("Patreon callback failed: %s", exc)
             return web.Response(text=CALLBACK_ERROR_HTML.format(message=str(exc)), content_type="text/html", status=400)
