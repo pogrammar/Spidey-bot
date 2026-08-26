@@ -7,6 +7,7 @@ import shutil
 import stat
 import tarfile
 import zipfile
+from collections import deque
 from pathlib import Path
 
 import aiohttp
@@ -34,6 +35,26 @@ NGROK_DOWNLOAD_URL = (
     else "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz"
 )
 
+# How long to let ngrok run before believing it. A rejected session — bad authtoken,
+# or ERR_NGROK_108 because another agent on the same account already holds the one
+# static domain — exits within a second or two; an accepted one stays up for good.
+# Waiting is the only way to tell the two apart, since both look identical at the
+# moment create_subprocess_exec returns.
+STARTUP_GRACE_SECONDS = 5
+
+# Retried, not one-shot. The failure that actually happened in practice was
+# transient and external: a dev machine running the bot held the account's single
+# static domain, so the deployed agent was rejected at boot. One attempt meant the
+# outage outlived its cause by however long it took someone to notice and restart —
+# the domain came free and this process never looked again. Backs off to
+# RETRY_DELAY_MAX_SECONDS so a genuinely broken config doesn't spin.
+RETRY_DELAY_START_SECONDS = 15
+RETRY_DELAY_MAX_SECONDS = 300
+
+# Enough of ngrok's own output to explain an exit, and no more — this is drained for
+# the whole life of a healthy tunnel, so it has to stay bounded.
+OUTPUT_TAIL_LINES = 5
+
 
 class TunnelCog(commands.Cog):
     """Launches an ngrok tunnel pointed at the /health server's port, using a free
@@ -49,9 +70,10 @@ class TunnelCog(commands.Cog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
         self.process: asyncio.subprocess.Process | None = None
+        self._closing = False
         # Same "grab the loop that's actually running, not the stale one from Bot()
         # construction" trick health_cog.py uses — see its comment for why.
-        asyncio.get_event_loop().create_task(self._start_tunnel())
+        self._task = asyncio.get_event_loop().create_task(self._start_tunnel())
 
     async def _ensure_binary(self) -> bool:
         global NGROK_PATH
@@ -135,29 +157,96 @@ class TunnelCog(commands.Cog):
 
         try:
             await asyncio.to_thread(self._write_config, config.NGROK_AUTHTOKEN)
+        except OSError as exc:
+            log.warning("Tunnel: failed to write ngrok's config file: %s", exc)
+            return
 
+        delay = RETRY_DELAY_START_SECONDS
+        last_reason: str | None = None
+        while not self._closing:
+            reason = await self._run_ngrok()
+            if self._closing:
+                return
+            # The first occurrence carries the information; repeating an unchanged
+            # reason every few minutes for the life of the process just buries the
+            # rest of the log. A *changed* reason is worth surfacing again, since
+            # it usually means the failure moved (e.g. 108 conflict -> bad token).
+            if reason != last_reason:
+                log.warning("Tunnel: ngrok exited — %s. Retrying in %ss.", reason, delay)
+                last_reason = reason
+            else:
+                log.debug("Tunnel: ngrok still failing — %s.", reason)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, RETRY_DELAY_MAX_SECONDS)
+
+    async def _run_ngrok(self) -> str:
+        """Runs ngrok to completion, returning why it stopped. Never raises — a tunnel
+        failing must not take the bot's Discord connection down with it, same
+        philosophy as health_cog.py's bind failure."""
+        try:
             self.process = await asyncio.create_subprocess_exec(
                 str(NGROK_PATH),
                 "http",
                 str(config.HEALTH_PORT),
                 f"--url={config.NGROK_STATIC_DOMAIN}",
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
+                # Without a TTY ngrok already logs here rather than drawing its
+                # interactive display, but say so explicitly so a future ngrok
+                # deciding otherwise can't silently blind this again.
+                "--log=stdout",
+                stdout=asyncio.subprocess.PIPE,
+                # Merged rather than a second pipe: which stream ngrok picks for a
+                # fatal error varies, and one stream means one thing to drain.
+                stderr=asyncio.subprocess.STDOUT,
             )
         except OSError as exc:
-            log.warning("Tunnel: failed to launch ngrok: %s", exc)
-            return
+            return f"failed to launch {NGROK_PATH}: {exc}"
 
-        # The domain's already known (it's the one you claimed on ngrok's dashboard),
-        # so there's no output to scrape for it the way the old cloudflared version
-        # needed — it's fixed, that's the whole point of using a static domain.
-        log.info(
-            "Tunnel: live at %s — register %s/patreon/callback as the Patreon redirect URI (only once — this URL doesn't change on restart).",
-            config.NGROK_STATIC_DOMAIN,
-            config.NGROK_STATIC_DOMAIN,
-        )
+        process = self.process
+        recent: deque[str] = deque(maxlen=OUTPUT_TAIL_LINES)
+
+        async def drain() -> None:
+            # Read continuously instead of collecting it at the end: an undrained
+            # pipe fills its buffer and blocks the child indefinitely, which would
+            # hang a tunnel that was otherwise working perfectly.
+            assert process.stdout is not None
+            async for raw in process.stdout:
+                line = raw.decode(errors="replace").strip()
+                if line:
+                    recent.append(line)
+
+        drainer = asyncio.create_task(drain())
+        try:
+            # Still alive after the grace period means the session was accepted, so
+            # this is the earliest point at which claiming "live" is actually true.
+            # The old code logged it unconditionally one line after spawning, which
+            # reported success just as loudly when ngrok had already exited.
+            await asyncio.sleep(STARTUP_GRACE_SECONDS)
+            if process.returncode is None:
+                log.info(
+                    "Tunnel: live at %s — register %s/patreon/callback as the Patreon redirect URI (only once — this URL doesn't change on restart).",
+                    config.NGROK_STATIC_DOMAIN,
+                    config.NGROK_STATIC_DOMAIN,
+                )
+            await process.wait()
+        finally:
+            await drainer
+
+        # ngrok's own words beat the exit code every time — "ERR_NGROK_108: account
+        # limited to N simultaneous sessions" is the whole diagnosis, where "exit
+        # code 1" starts another round of guessing.
+        for line in reversed(recent):
+            if "ERR_NGROK" in line or "lvl=eror" in line or "lvl=crit" in line:
+                return line
+        if recent:
+            return f"exit code {process.returncode}: {recent[-1]}"
+        return f"exit code {process.returncode} (no output)"
 
     def cog_unload(self):
+        # Set before cancelling so the retry loop can't relaunch what we're about to
+        # terminate — otherwise unloading the cog would leave an orphan ngrok holding
+        # the account's static domain, which is the exact conflict this cog trips on.
+        self._closing = True
+        self._task.cancel()
         if self.process is not None and self.process.returncode is None:
             self.process.terminate()
 
