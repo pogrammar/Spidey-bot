@@ -26,6 +26,23 @@ from utils.tier_accent import set_current_accent
 # would just be a redundant second welcome message for the same interaction.
 FIRST_RUN_SKIP_COMMANDS = {"start"}
 
+# How stale the last-active stamp has to be before it's worth a write.
+#
+# This hook runs on EVERY command, so without this it issued one UPDATE + COMMIT per
+# command per user — the bot's single largest source of write traffic, and the reason
+# ordinary play generated a constant stream of writers competing for SQLite's one write
+# lock. With it, a user issuing commands faster than once a minute costs a read and
+# nothing else.
+#
+# 60 seconds is safe because there is exactly one consumer of this column:
+# shakedown_service.target_idle_seconds, feeding Stealth Mode's
+# STEALTH_MODE_INACTIVITY_THRESHOLD_SECONDS window of 20 minutes (§9.1.2). Granularity of
+# a minute against a threshold of twenty is at most a 5% error on the one comparison that
+# reads it, and it errs toward reporting a player as MORE idle than they are — i.e.
+# toward firing the perk the subscriber paid for. If another consumer ever needs a
+# precise stamp, give it its own column rather than lowering this.
+LAST_ACTIVE_WRITE_INTERVAL = datetime.timedelta(seconds=60)
+
 
 async def announce_if_first_time(ctx: discord.ApplicationContext) -> None:
     async with async_session() as session:
@@ -40,8 +57,13 @@ async def announce_if_first_time(ctx: discord.ApplicationContext) -> None:
 
         existing = await session.get(User, ctx.author.id)
         if existing is not None:
-            existing.last_active_at = datetime.datetime.utcnow()
-            await session.commit()
+            now = datetime.datetime.utcnow()
+            if (
+                existing.last_active_at is None
+                or now - existing.last_active_at >= LAST_ACTIVE_WRITE_INTERVAL
+            ):
+                existing.last_active_at = now
+                await session.commit()
             return
 
     embed = base_embed(

@@ -24,6 +24,18 @@ TOKEN_URL = "https://www.patreon.com/api/oauth2/token"
 IDENTITY_URL = "https://www.patreon.com/api/oauth2/v2/identity"
 SCOPES = "identity identity.memberships"
 
+# Ceiling on any single Patreon HTTP call. aiohttp's default is a 5-MINUTE total timeout,
+# which is the wrong order of magnitude for both callers here and dangerous for one of
+# them: refresh_stale_links holds ONE database session open across up to REFRESH_BATCH_SIZE
+# sequential round-trips, so a single stalled connection could pin a pooled DB connection
+# for five minutes while players are on the bot. 20s is well past Patreon's normal
+# response time, and a call that exceeds it is already going to be treated as a transient
+# failure and retried on the next tick — which is strictly better than holding the
+# connection. aiohttp raises asyncio.TimeoutError, which _get_identity/_refresh_tokens
+# already fold into _TransientPatreonError, so the fail-open contract in §9.1.1 is
+# unchanged: a timeout leaves the stored tier exactly as it was.
+PATREON_HTTP_TIMEOUT = aiohttp.ClientTimeout(total=20)
+
 # The public creator page — where someone goes to *start* a pledge, as opposed to the
 # three OAuth endpoints above, which are where an existing pledge gets read. Not an API
 # endpoint and nothing here calls it; it lives beside them so every patreon.com URL in
@@ -431,7 +443,7 @@ async def handle_callback(session: AsyncSession, code: str, state: str) -> tuple
     if discord_id is None:
         raise PatreonLinkError("This link expired or was already used — run /patreon link again.")
 
-    async with aiohttp.ClientSession() as http:
+    async with aiohttp.ClientSession(timeout=PATREON_HTTP_TIMEOUT) as http:
         async with http.post(
             TOKEN_URL,
             data={
@@ -661,7 +673,7 @@ async def refresh_link(session: AsyncSession, link: PatreonLink) -> RefreshOutco
                               error="Patreon credentials aren't configured")
 
     try:
-        async with aiohttp.ClientSession() as http:
+        async with aiohttp.ClientSession(timeout=PATREON_HTTP_TIMEOUT) as http:
             try:
                 identity = await _get_identity(http, link.access_token)
             except _AuthExpiredError:

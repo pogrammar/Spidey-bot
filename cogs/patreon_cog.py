@@ -1,6 +1,8 @@
+import asyncio
 import html
 import logging
 
+import aiohttp
 import discord
 from aiohttp import web
 from discord.ext import commands
@@ -717,6 +719,20 @@ class PatreonCog(commands.Cog):
         except PatreonLinkError as exc:
             log.warning("Patreon callback failed: %s", exc)
             return web.Response(text=CALLBACK_ERROR_HTML.format(message=str(exc)), content_type="text/html", status=400)
+        except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
+            # Newly reachable since PATREON_HTTP_TIMEOUT capped these calls at 20s (they
+            # previously ran on aiohttp's 5-minute default, so a stall just hung). Kept
+            # above the blanket handler so a slow Patreon reads as "try again" rather than
+            # as "check the bot's logs" — nothing is wrong with the bot, and re-running
+            # /patreon link is the whole fix.
+            log.warning("Patreon callback: Patreon didn't respond in time: %r", exc)
+            return web.Response(
+                text=CALLBACK_ERROR_HTML.format(
+                    message="Patreon didn't respond in time — run <code>/patreon link</code> again."
+                ),
+                content_type="text/html",
+                status=504,
+            )
         except Exception:
             log.exception("Patreon callback: unexpected error")
             return web.Response(
