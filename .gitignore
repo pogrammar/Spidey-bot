@@ -7,6 +7,16 @@ __pycache__/
 # .example) so the template still gets committed.
 *.env
 *.db
+# SQLite's WAL sidecars, which only started existing with the journal_mode=WAL
+# switch in db/base.py. `*.db` above does NOT match them — these names end in
+# .db-wal / .db-shm, not .db — which is how they got committed once already
+# (b6568fb) and then blocked `git pull` on every machine that had its own live
+# pair. A -wal is only meaningful beside the exact .db that produced it, and -shm
+# is shared memory mmap'd by every live connection, so neither may ever travel
+# between machines.
+*.db-wal
+*.db-shm
+*.db-journal
 .claude
 bin/
 scratch/
