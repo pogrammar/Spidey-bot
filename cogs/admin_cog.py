@@ -3,7 +3,7 @@ import datetime
 import discord
 from discord import Option
 from discord.ext import commands
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 import config
 from db.base import async_session
@@ -53,6 +53,7 @@ HELP_SECTIONS = [
     ("General", [
         ("/admin bypass", "Toggle cooldown + brew-time bypass for yourself."),
         ("/admin bypass-status", "Check whether your bypass is on."),
+        ("/admin info", "Bot-wide totals: servers joined and profiles in the database."),
         ("/admin user-info", "Full profile dump for a user."),
         ("/admin wipe", "Permanently reset a user's entire profile. Destructive."),
     ]),
@@ -493,6 +494,32 @@ class AdminCog(commands.Cog):
             return
         state = "ON" if is_bypass_enabled(ctx.author.id) else "OFF"
         await _reply(ctx, f"Cooldown bypass is **{state}**.")
+
+    @admin.command(name="info", description="Bot-wide totals: servers joined and profiles in the database.")
+    async def info(self, ctx: discord.ApplicationContext):
+        """The two numbers are deliberately labelled "Servers" and "Players", not
+        "Servers" and "Users" — a users row is only created lazily on someone's first
+        command (get_or_create_user via utils/first_run.py), so this is reach, not
+        headcount. Total Discord membership isn't available at all: the bot runs on
+        Intents.default() with no Members intent."""
+        if not await _check_owner(ctx):
+            return
+        async with async_session() as session:
+            user_count = (await session.execute(select(func.count()).select_from(User))).scalar_one()
+        view = StaticView(
+            "Admin — Info",
+            fields=[
+                ("Servers", f"{len(self.bot.guilds):,}"),
+                ("Players", f"{user_count:,}"),
+            ],
+            bulleted=True,
+            footer_lines=[
+                "Players = rows in `users` — anyone who's run at least one command, "
+                "not total Discord members.",
+            ],
+            icon_key="admin_badge",
+        )
+        await ctx.respond(view=view, files=view.files, ephemeral=True)
 
     @admin.command(name="user-info", description="Full profile dump for a user.")
     async def user_info(
