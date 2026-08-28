@@ -70,7 +70,7 @@ HELP_SECTIONS = [
         ("/admin profile set-streak", "Set daily streak (current + longest)."),
     ]),
     ("Inventory", [
-        ("/admin inventory give-item", "Give any item by key + quantity."),
+        ("/admin inventory give-item", "Give any item by key + quantity, to a member or a raw user ID."),
         ("/admin inventory remove-item", "Take an item away."),
         ("/admin inventory set-durability", "Repair or break a specific owned item."),
         ("/admin inventory set-upgrade", "Force a gadget's upgrade level."),
@@ -119,6 +119,89 @@ async def _check_owner(ctx: discord.ApplicationContext) -> bool:
 async def _reply(ctx: discord.ApplicationContext, message: str) -> None:
     view = StaticView("Admin", message, icon_key="admin_badge")
     await ctx.respond(view=view, files=view.files, ephemeral=True)
+
+
+# Snowflake shapes. Discord IDs are 17-19 digits today and 20 is the ceiling the format
+# allows, so anything outside that isn't an ID and shouldn't cost an API call to find out.
+_SNOWFLAKE_MIN_DIGITS = 15
+_SNOWFLAKE_MAX_DIGITS = 20
+
+
+async def _resolve_target(
+    ctx: discord.ApplicationContext,
+    member: discord.Member | None,
+    raw_id: str | None,
+) -> discord.User | discord.Member | None:
+    """The grant target, from either the member picker or a raw user ID. Returns None when
+    it can't resolve one, having already sent the error itself — callers just `return`.
+
+    This exists because `Option(discord.Member)` can only name someone Discord will resolve
+    as a member of the guild the command was run in, and the Patreon vial shop
+    (patreon_service.VIAL_BUNDLES) is fulfilled by hand for buyers who need not be in the
+    server at all — or in any shared server. A raw ID is the only handle the owner reliably
+    has for those people, since a Patreon order carries whatever the buyer typed into it.
+
+    **raw_id is a `str` and must never become an `Option(int)`.** Slash-command option
+    values arrive as JSON, a Discord snowflake is 64-bit, and JSON numbers are IEEE-754
+    doubles — which hold integers exactly only up to 2^53. A 19-digit snowflake is past
+    that, so an int-typed option can silently deliver a *different* ID than the one that
+    was typed, and the grant would land on a neighbouring account. Taking the digits as
+    text is the only way to get them through unmodified.
+
+    The fetch_user round-trip is not decoration either. The owner will be hand-copying IDs
+    out of order notes, and get_or_create_user happily creates a row for any integer, so a
+    typo'd snowflake would otherwise mint a real profile for an account that does not
+    exist, drop 300 vials into it, and print a confident receipt for a grant the buyer
+    never got. Discord answering "no such user" is the only validation available — there is
+    no local record to check against for someone who has never used the bot.
+    """
+    # Normalised once, up front, so "blank" means the same thing to the ambiguity guard
+    # below as it does to the fallback. Doing the truthiness test on the raw option instead
+    # made a whitespace-only user_id count as "both given" and refuse a perfectly ordinary
+    # member-picker grant.
+    provided = (raw_id or "").strip()
+
+    if member is not None and provided:
+        await ctx.respond(
+            embed=error_embed("Pass either `user` or `user_id`, not both — I can't tell which you meant."),
+            ephemeral=True,
+        )
+        return None
+
+    if not provided:
+        return member or ctx.author
+
+    # Tolerate a pasted mention (`<@123>` / `<@!123>`) as well as bare digits: copying a
+    # user out of Discord gives you the former, copying out of a spreadsheet the latter,
+    # and rejecting one of them is a papercut on a command that will get heavy manual use.
+    # Stripped from `provided` rather than folded into it, so a string that is *only*
+    # mention punctuation still reaches the error below instead of emptying out and
+    # silently falling back to granting the goods to the admin running the command.
+    cleaned = provided.strip("<@!>")
+    if not cleaned.isdigit() or not (_SNOWFLAKE_MIN_DIGITS <= len(cleaned) <= _SNOWFLAKE_MAX_DIGITS):
+        await ctx.respond(
+            embed=error_embed(
+                f"`{raw_id}` isn't a Discord user ID. Enable Developer Mode, right-click the "
+                "user and hit Copy User ID — it's a long run of digits."
+            ),
+            ephemeral=True,
+        )
+        return None
+
+    try:
+        return await ctx.bot.fetch_user(int(cleaned))
+    except discord.NotFound:
+        await ctx.respond(
+            embed=error_embed(f"Discord has no user with ID `{cleaned}`. Check the digits and try again."),
+            ephemeral=True,
+        )
+        return None
+    except discord.HTTPException as exc:
+        await ctx.respond(
+            embed=error_embed(f"Couldn't look up `{cleaned}` — Discord said: {exc}. Nothing was granted."),
+            ephemeral=True,
+        )
+        return None
 
 
 def _add_admin_header(container: discord.ui.Container, title: str) -> discord.File | None:
@@ -725,17 +808,26 @@ class AdminCog(commands.Cog):
 
     # ---- inventory --------------------------------------------------------------
 
-    @inventory.command(name="give-item", description="Give any item by key + quantity.")
+    @inventory.command(name="give-item", description="Give any item by key + quantity (member or raw user ID).")
     async def give_item(
         self,
         ctx: discord.ApplicationContext,
         item: Option(str, "Which item?", autocomplete=all_item_autocomplete),
         quantity: Option(int, "How many", min_value=1, default=1),
         user: Option(discord.Member, "Who gets it (defaults to you)", required=False),
+        user_id: Option(
+            str,
+            "Raw Discord user ID — use this for someone not in this server",
+            required=False,
+        ),
     ):
         if not await _check_owner(ctx):
             return
-        target = user or ctx.author
+        # str, not int — see _resolve_target for why an int-typed snowflake option can
+        # deliver a different ID than the one that was typed.
+        target = await _resolve_target(ctx, user, user_id)
+        if target is None:
+            return
 
         async with async_session() as session:
             item_def = await session.get(Item, item)
@@ -760,9 +852,15 @@ class AdminCog(commands.Cog):
                 await add_item(session, target.id, item, quantity)
             await session.commit()
 
+        # target.mention works for a fetch_user result too, so an off-server buyer still
+        # renders as a real ping rather than a bare number. The ID is spelled out beside it
+        # because that's the thing being verified against the order note — and because a
+        # mention for someone the client can't resolve renders as @unknown-user, which is
+        # exactly the case this option exists to serve.
         await _reply(
             ctx,
-            f"Gave {target.mention} {quantity}x {item_label(item, item_def.name)}.{scrapped_note}",
+            f"Gave {target.mention} (`{target.id}`) {quantity}x "
+            f"{item_label(item, item_def.name)}.{scrapped_note}",
         )
 
     @inventory.command(name="remove-item", description="Take an item away.")

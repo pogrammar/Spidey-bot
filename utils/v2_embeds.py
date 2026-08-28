@@ -157,7 +157,7 @@ def static_container(
 
 
 class StaticView(discord.ui.DesignerView):
-    """A single-container, no-buttons V2 view for plain informational responses.
+    """A single-container V2 view for plain informational responses.
 
     footer_lines: what this project calls the "footer" on a V2 command — one or
     more small subtext lines at the bottom of the container (Discord's `-#`
@@ -170,6 +170,18 @@ class StaticView(discord.ui.DesignerView):
     the art exists, `self.files` holds the discord.File that must be passed to
     `ctx.respond(view=view, files=view.files)` — always safe to pass even when
     empty, so call sites don't need an if-check of their own.
+
+    link_button: `(label, url)` for a single link-style button rendered *inside* the
+    container, below the footer. Link buttons are the one kind this view will ever take:
+    they have no callback, so there is no state to hold, nothing for a timeout to
+    protect, and the view stays as inert as it is without one — which is why this
+    doesn't need to become a bespoke DesignerView the way anything with a real
+    callback does. It has to be inside the container rather than added to the view
+    alongside it, or it renders detached from the card it belongs to.
+
+    Passing None is provably identical to the old no-button behaviour: the branch below
+    is the only thing that reads it, and it adds no separator and no row when unset. That
+    guarantee is what makes this safe to add to a view 22 cogs already use.
 
     The Patreon tier accent needs nothing from the call site: it's read from the
     ambient per-command context (see utils/tier_accent.py), which is live wherever a
@@ -187,6 +199,7 @@ class StaticView(discord.ui.DesignerView):
         icon_key: str | None = None,
         timeout: float | None = None,
         accent: int | None = None,
+        link_button: tuple[str, str] | None = None,
     ):
         super().__init__(timeout=timeout)
         container, file = static_container(title, description, fields, field_groups, bulleted, icon_key, accent)
@@ -194,6 +207,10 @@ class StaticView(discord.ui.DesignerView):
             container.add_item(discord.ui.Separator())
             subtext = "\n".join(f"-# {line}" for line in footer_lines if line)
             container.add_item(discord.ui.TextDisplay(subtext))
+        if link_button is not None:
+            label, url = link_button
+            container.add_item(discord.ui.Separator())
+            container.add_row(discord.ui.Button(label=label, style=discord.ButtonStyle.link, url=url))
         self.add_item(container)
         self.files: list[discord.File] = [file] if file else []
 

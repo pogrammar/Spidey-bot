@@ -449,10 +449,15 @@ def _pitch_sections() -> list[tuple[str | None, list[tuple[str, str]]]]:
 class SubscribeView(discord.ui.DesignerView):
     """The pitch card with a link button to the Patreon page inside the container.
 
-    Bespoke rather than a StaticView because StaticView is explicitly the no-buttons case,
-    and the button has to live *inside* the container or it renders detached from the card
-    it belongs to. Everything above the button is still built by static_container, so the
-    header, the group dividers and the tier accent behave identically to every other panel.
+    Bespoke for historical reasons only: StaticView was the no-buttons case when this
+    was written, and the button has to live *inside* the container or it renders detached
+    from the card it belongs to. StaticView grew a `link_button` argument on 2026-08-28
+    (for /lab's vial-shop nudge) that does exactly this, so the whole class is now
+    replaceable by one StaticView call — left alone because it works and
+    scratch/check_patreon_subscribe.py drives it, not because it still has to be bespoke.
+
+    Everything above the button is still built by static_container, so the header, the
+    group dividers and the tier accent behave identically to every other panel.
 
     timeout=None for the same reason LinkButtonView uses it: a link button has no callback
     to expire, so there's nothing for a timeout to protect.

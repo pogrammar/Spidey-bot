@@ -322,7 +322,7 @@ The sweep also fixed a real numeric bug it surfaced: Sonic Dampener multiplied t
 
 `/patreon status` shows the raw Patreon-reported tier string plus the resolved perk-tier label. `/patreon unlink` deletes the DB row only — does not touch the actual Patreon pledge.
 
-`/patreon subscribe` (added 2026-08-25) is the front of the funnel — the surface that existed nowhere before it. Every other command in the group reports on a link you already have, and the only pointers a non-subscriber ever got said "subscribe" without saying where, because no patreon.com creator URL existed anywhere in the repo. `patreon_service.PATREON_PAGE_URL` (`https://www.patreon.com/c/spideybotdiscord`, the canonical `/c/` creator form) now sits beside the three OAuth endpoints so every patreon.com URL is in one place, and `patreon_cog.SubscribeView` renders a V2 card with a link button to it. Four things about it are deliberate and shouldn't be "tidied":
+`/patreon subscribe` (added 2026-08-25) is the front of the funnel — the surface that existed nowhere before it. Every other command in the group reports on a link you already have, and the only pointers a non-subscriber ever got said "subscribe" without saying where, because no patreon.com creator URL existed anywhere in the repo. `patreon_service.PATREON_PAGE_URL` (`https://www.patreon.com/c/spideybotdiscord`, the canonical `/c/` creator form) now sits beside the three OAuth endpoints so every patreon.com URL is in one place, and `patreon_cog.SubscribeView` renders a V2 card with a link button to it. (`PATREON_SHOP_URL` joined it there on 2026-08-28 — a *storefront*, not the pledge page, for the §11.1 vial bundles. Keep the two distinct: this one sells subscriptions, that one sells one-off items.) Four things about it are deliberate and shouldn't be "tidied":
 
 - **One line per perk, and the long copy is deliberately NOT reused.** `/patreon perks` is read by somebody who has already paid and wants the detail; this is read by somebody deciding whether to, and a wall of paragraphs is a wall they bounce off (owner's call, 2026-08-25 — the card shipped that morning with the long constants and was cut the same day, 2697 → 1416 characters). So `PITCH_ARACHNID`/`PITCH_ARACHNID_COST`/`PITCH_SYMBIOTE`/`PITCH_SYMBIOTE_COST` are separate, terse lines: bold perk name, plain payoff, one line each. That reintroduces the drift risk the shared-constant rule exists to kill, so two things hold the two descriptions together — **every number is interpolated from the same constant the long line uses** (`ENHANCED_STRENGTH_DAMAGE_BONUS`, `ARACHNID_ALLY_DECAY_INCREASE`), so no rate change can leave a stale figure here; and **`scratch/check_patreon_subscribe.py` asserts count parity** against the long lists, so adding a perk to `ARACHNID_PERKS` or `_symbiote_perks` without writing its one-liner fails a check instead of silently shipping a tier that undersells itself. The same script caps line length (with custom-emoji markup stripped) and rejects mid-line sentence breaks, so pasting the long copy back in trips it. That cap is a paragraph-regression ceiling, not a terseness target — the owner hand-lengthened two Symbiote lines the same day and they're meant to stay long, so don't tighten it back to hug the current longest line. Each tier's **cost** still sits inside that tier's own block, so the upside can't be read without the downside.
 - **`_eyebrow()` exists because the card has a two-level hierarchy and `_add_group` models one.** Handing `_add_group` three fields per tier renders the tier name as the small grey eyebrow and "What it costs you" as bold above it — the sub-label shouting over the product. So each tier is *one merged field* (empty field name, which takes `_add_group`'s bold branch) with its categories nested inside at `-# UPPER` weight. That keeps the project's existing vocabulary (bold = this block's own label, `-# UPPER` = a category tag within it) instead of inventing a third style for one card, and it dropped the component count from 22 to 12.
@@ -528,6 +528,35 @@ Four perks are fully speced with locked numbers but unbuilt, all four on the Boo
 
 `services/brewing_service.py`. One active `Brew` per user at a time. `BREW_COST = $30`, `BREW_DURATION = 5 minutes` (candidate for the not-yet-shipped 3-minute perk, §9.5). Yield: `rand_range([2,4])` `web_fluid_vial`. `MUTATION_CHANCE = 0.08` → also grants 1x `unstable_web_fluid` (flex collectible).
 
+### 11.1 Web-Fluid vial bundles — real money, off-platform, fulfilled by hand (2026-08-28)
+
+Vials are the first thing in the game sold for actual currency. The bundles live on the Patreon **shop** (a storefront, separate from the tier pledges of §9) at `patreon_service.PATREON_SHOP_URL`:
+
+| Vials | Price | Per vial |
+| --- | --- | --- |
+| 30 | $3.00 | $0.100 |
+| 55 | $4.99 | $0.091 |
+| 130 | $9.99 | $0.077 |
+| 300 | $19.99 | $0.067 |
+
+`patreon_service.VIAL_BUNDLES` is the table, **cheapest-first** — that ordering is load-bearing, since `VIAL_BUNDLES[0]` is what every "as cheap as $3" line in the bot reads off. Per-vial cost falls monotonically as bundles grow (checked, not just intended).
+
+**Fulfilment is manual and nothing in this repo automates it — this is the single most important fact about the feature.** There is no webhook, no entitlement check, no order record; the bot cannot tell whether anybody has bought anything, and no code path anywhere reads `VIAL_BUNDLES` for permission. An order becomes vials when the owner runs `/admin inventory give-item` by hand (§19.7). So `VIAL_BUNDLES` is **copy, not entitlement**. Anything added later that treats it as a source of truth about a purchase is wrong.
+
+Native Discord monetization (premium buttons + SKUs, which pycord 2.8.1 does fully support) was researched and set aside for this — the entire flow here is off-platform on purpose.
+
+Two deliberate non-features, both owner's calls on 2026-08-28:
+
+- **Only the cheapest bundle is ever quoted in-bot**, as an entry price. The shop page is the catalog; a four-row price table inside a chem-lab card reads as an ad break rather than a nudge.
+- **Not gated on Patreon tier.** A one-time vial purchase and a recurring pledge are different products, so unlike every §9 perk surface, a Symbiote subscriber seeing this is being shown something they don't already have. There's nothing here a subscription makes redundant.
+
+**Every in-bot mention must say the stashes *start* at $3 and go up from there — never that they cost $3** (owner's call, revised 2026-08-28). This is a factual constraint, not a tone preference: only one of the four bundles costs $3.00, so a flat "$3" quote becomes false the instant somebody clicks through and sees the $19.99 option. "Starts at… and up" is the only framing that's true of the whole table while still leading with the cheapest number. `check_vial_shop` asserts every pitch line contains both halves — a start-word (`start at`/`starts at`) and an upward-motion word (`go up`/`goes up`/`climb`) — so a future copy edit can't quietly drop the qualifier and leave a bare price behind.
+
+**And the price never appears on a button** (same revision). A button is a label for an action; the price belongs in the sentence framing it. A button also has no room for "and up" without reading as clutter, so putting a figure there would fight the framing rule above. `SHOP_BUTTON_LABEL` is `"Buy Web-Fluid Stash"`, and the check asserts it carries **no digits at all** rather than merely lacking `$3` — an exact negative, so re-adding the price for "clarity" has to fail something first.
+
+`format_bundle_price()` renders `$3` for whole dollars and `$4.99` otherwise — a trailing `.00` on a price tag reads like an unfinished placeholder rather than a price.
+
+
 ---
 
 ## 12. Allies — Aunt May & MJ (`/ally`)
@@ -640,6 +669,29 @@ Covers everything not already in §6 (proc chances, wearout, upgrade cost formul
 ### 19.3 `/lab` (Chem Lab — `services/brewing_service.py`, `cogs/lab_cog.py`)
 Thin wrapper over §11's brewing mechanics: `/lab status` (time remaining or "ready"), `/lab brew` (starts a batch, fails if one's already active or wallet's short of $30), `/lab collect` (fails if nothing's brewing or it's not ready yet — `/admin bypass` skips the ready-time check for testing).
 
+**The vial-shop nudge** (2026-08-28, §11.1). **Every path out of all three commands carries it — success and refusal alike** (owner's call, revised the same day; the first pass put it on the three success cards only). One line per path, because each moment sells something different: `SHOP_PITCH_BREW` sells the wait ("no hotplate, no timer, no smell"), `SHOP_PITCH_COLLECT` sells the yield (comparing a batch's 2-4 against the 30-vial bundle), `SHOP_PITCH_STATUS` sells whichever of those the player is sitting in, and the two refusal lines sell the thing the player just failed to get. A single shared line would have to be vague enough to fit all five, which is the opposite of tempting.
+
+Five surfaces, two rendering shapes:
+
+| Path | Shape | Pitch | Button |
+| --- | --- | --- | --- |
+| `/lab status` (idle *and* cooking) | `StaticView` | `SHOP_PITCH_STATUS`, footer subtext | inside the container |
+| `/lab brew` success | `StaticView` | `SHOP_PITCH_BREW`, footer subtext | inside the container |
+| `/lab collect` success | `StaticView` | `SHOP_PITCH_COLLECT`, footer subtext | inside the container |
+| `/lab brew` refusal | `error_embed` | `SHOP_PITCH_BREW_FAIL`, own paragraph | `link_button_view`, beside the embed |
+| `/lab collect` refusal | `error_embed` | `SHOP_PITCH_COLLECT_FAIL`, own paragraph | `link_button_view`, beside the embed |
+
+**The refusals stay classic embeds and must not be "unified" onto `StaticView`.** Two reasons, and both are asserted in `check_vial_shop` so the unification fails a check rather than merely looking different: `error_embed`'s "Parker Luck." grey is the error identity every cog in the project shares, and `make_container()` applies the caller's Patreon tier accent automatically — so a V2 refusal card would be painted in the accent of the player being turned away. `utils.embeds.link_button_view()` exists for exactly this: one link button on a classic view, `timeout=None` for the same reason `StaticView` uses it (no callback, so nothing for a timeout to protect).
+
+**The two refusal lines are written quieter than the three success lines** — plain prose, no bold, appended as their own paragraph under the error rather than restyling the card to sell. Putting a nudge on a refusal is a real risk: turning a refusal into a sales pitch is the mistake round six fixed in the other direction on `/shakedown`, and "you can't afford this, here's how to pay us" is that mistake with money attached. What makes it defensible is that these *are* the highest-intent moments in the commands — the player wanted vials right now and the game said no — so the pitch answers the refusal instead of interrupting it. If it ever reads as the bot needling somebody it just turned away, the volume of these two lines is the thing to reconsider first.
+
+Each refusal line has to fit **both** of its command's failure reasons, because the service returns one message and the cog cannot tell which it got: `brew` fails on an active batch *or* a wallet under $30, `collect` on nothing brewing *or* a batch that isn't ready. Note what the brew line does **not** do — quote `BREW_COST`. "Start at $3… no $30" puts two prices one clause apart with the smaller a substring of the larger; "no chemicals to buy" carries the wallet-short case with no second figure and covers the already-brewing case too.
+
+Every figure in that copy is interpolated — bundle size and price from `VIAL_BUNDLES[0]`, per-batch yield from `brewing_service.YIELD_RANGE`. This is §9.3's copy rule, and it binds harder here: the comparison the pitch is built on ("a batch gets you 2-4, this gets you 30") is only tempting while it's true, and a stale number in a price quote is a stale number the bot is asserting about **real money**. `scratch/check_vial_shop.py` proves it by moving both constants and re-rendering. The "starts at, and up" framing and the digit-free button label are §11.1's rules, checked there.
+
+The button rides on `v2_embeds.StaticView`'s `link_button=(label, url)` argument, added the same day rather than hand-building a bespoke `DesignerView`. Link buttons are the only kind `StaticView` will ever take: no callback means no state and nothing for a timeout to protect, so the view stays as inert as it was without one. `link_button=None` is provably identical to the old no-button behaviour (structural-equivalence check, mirroring the `Container(colour=None)` precedent) — which is what made it safe to add to a class 22 cogs already use.
+
+
 ### 19.4 `/workbench` (Suit repair — `services/suit_service.py`, `cogs/suit_cog.py`)
 `/workbench status` shows current integrity, full-repair cost breakdown, and components on hand. `/workbench repair` executes it — see §16 for the cost/component formula. Both are blocked (with an explicit message) if `eviction_meter >= 100` (§8).
 
@@ -661,6 +713,15 @@ If the calling user isn't in the visible top-20 list, a footer line shows their 
 
 ### 19.7 `/admin` (owner/granted-admin only — `cogs/admin_cog.py`, `services/admin_service.py`)
 Not player-facing (deliberately excluded from `/help`). Full command groups: `economy` (give-cash, set-bank-capacity), `profile` (set-reputation, set-boss-clears, set-suit, set-crime-level, set-eviction, set-rent-due, set-streak), `inventory` (give-item, remove-item, set-durability, set-upgrade), `cooldown` (reset, set), `ally` (set-happiness, reset), `brew` (force-ready, clear), `market` (delete-listing), `admins` (add/remove/list — runtime-grantable access on top of the hardcoded root `ADMIN_DISCORD_IDS`), plus general tools: `bypass`/`bypass-status` (cooldown+brew-time skip for testing), `user-info` (full profile dump with live cooldowns), and **`/admin wipe`** — the one truly destructive command, requiring a second confirm-button click, permanently erasing a target's entire profile via `wipe_user()` (§7, §20.12).
+
+**`/admin inventory give-item` takes a raw user ID** (2026-08-28) via an optional `user_id` alongside the usual `user` picker. This exists for §11.1 fulfilment: a Patreon buyer need not be in the server, and `Option(discord.Member)` can only ever resolve a guild member, so the picker alone cannot reach them. `_resolve_target()` handles the resolution and three things about it are deliberate:
+
+- **`Option(str)`, never `Option(int)`.** Slash-command option values arrive as JSON, and JSON numbers are IEEE-754 doubles — exact only to 2^53. A 19-digit snowflake exceeds that, so an int option can silently deliver a *different* ID than the one typed. This is a data-corruption bug that looks like a working command.
+- **`fetch_user()` validation is mandatory, not politeness.** Without it a typo'd-but-well-formed ID would mint a real profile for a user who doesn't exist, drop 300 vials into it, and print a confident receipt. Rejects non-digits and anything outside 15–20 digits before spending an API call; accepts a pasted `<@123…>` mention.
+- **Passing both `user` and `user_id` is refused** rather than silently preferring one. The whitespace-only case is normalized first, so `user_id:"   "` with a picked member is an ordinary grant, not an ambiguity error — but a string of pure mention punctuation (`<@!>`) still reaches the error branch instead of emptying out and granting the goods to the admin running the command.
+
+The receipt spells out `(<id>)` next to the mention, because a mention for a user Discord can't resolve for the viewer renders as `@unknown-user` — exactly the case this option serves.
+
 
 ---
 

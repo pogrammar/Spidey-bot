@@ -44,6 +44,44 @@ PATREON_HTTP_TIMEOUT = aiohttp.ClientTimeout(total=20)
 # creator URL and is what the vanity path redirects to.
 PATREON_PAGE_URL = "https://www.patreon.com/c/spideybotdiscord"
 
+# The Patreon *shop* — one-time purchases, not pledges. Distinct product, distinct URL
+# form (/cw/.../shop), and deliberately kept beside PATREON_PAGE_URL for the same reason
+# that one is here: one file to edit when anything about the Patreon storefront moves.
+PATREON_SHOP_URL = "https://www.patreon.com/cw/spideybotdiscord/shop"
+
+# Web-Fluid Vial bundles sold on the shop above, cheapest first.
+#
+# ⚠️ FULFILMENT IS MANUAL AND NOTHING IN THIS REPO AUTOMATES IT. Patreon's shop has no
+# entitlement the bot can read — there is no callback, no webhook, no polling job, and no
+# equivalent of §9.1's OAuth flow for a one-time purchase. An order becomes vials when the
+# owner runs `/admin inventory give-item web_fluid_vial <count> user_id:<buyer>` by hand
+# (§19.7). So this table is *copy*, not entitlement: no code branches on it, and nothing
+# here should ever grow a function that looks like it grants anything.
+#
+# It exists at all so player-facing copy can interpolate a price instead of typing one.
+# That's the same rule that keeps Biomorphic Webbing's rate and Stealth Mode's 20 minutes
+# out of player-facing strings (§9.3), and it matters more here than in either of those:
+# a stale in-game number is a wrong number, a stale *price* is a wrong number the bot is
+# quoting about real money. Cheapest-first order is load-bearing — VIAL_BUNDLES[0] is what
+# every "as cheap as $X" line reads off.
+VIAL_BUNDLES: tuple[tuple[int, float], ...] = (
+    (30, 3.00),
+    (55, 4.99),
+    (130, 9.99),
+    (300, 19.99),
+)
+
+
+def format_bundle_price(dollars: float) -> str:
+    """'$3' for a whole number of dollars, '$4.99' otherwise.
+
+    One formatter so every surface quotes a bundle identically. The whole-dollar case is
+    the reason this isn't an inline f-string: `f"${3.00:.2f}"` renders "$3.00", and a
+    trailing .00 on a price tag reads like an unfinished placeholder rather than a price.
+    """
+    return f"${dollars:.0f}" if dollars == int(dollars) else f"${dollars:.2f}"
+
+
 # Pending link requests, keyed by a random state token — this is what ties a
 # Patreon callback (which only carries the state back) to the Discord user who
 # actually ran /patreon link. In-memory is a deliberate tradeoff: a bot restart
