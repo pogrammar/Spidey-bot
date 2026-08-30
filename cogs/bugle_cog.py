@@ -10,6 +10,7 @@ from services.cooldowns import format_remaining, get_remaining_seconds, set_cool
 from services.economy import get_or_create_user
 from services.patreon_service import get_tier_rank
 from services.patrol_service import get_effective_camera
+from services.server_perks import resolve_perks, scaled
 from utils.embeds import error_embed
 from utils.v2_embeds import StaticView
 
@@ -31,11 +32,12 @@ class BugleCog(commands.Cog):
     async def photos(self, ctx: discord.ApplicationContext):
         async with async_session() as session:
             user = await get_or_create_user(session, ctx.author.id)
-            summary = await get_pending_summary(session, user)
+            perks = await resolve_perks(session, ctx)
+            summary = await get_pending_summary(session, user, perks)
             # Read inside the session so the card's icon is the body they actually shoot
             # on. "Your Camera Roll" showing a beat-up 35mm to somebody with a Gold camera
             # equipped was the most visible instance of the icon ignoring what they own.
-            camera = await get_effective_camera(session, user.discord_id)
+            camera = await get_effective_camera(session, user.discord_id, perks)
 
         if not summary.breakdown:
             await ctx.respond(
@@ -73,14 +75,17 @@ class BugleCog(commands.Cog):
                 return
 
             tier_rank = await get_tier_rank(session, user.discord_id)
-            result = await submit_photos(session, user, tier_rank)
+            perks = await resolve_perks(session, ctx)
+            result = await submit_photos(session, user, tier_rank, perks)
             if result is None:
                 await ctx.respond(
                     embed=error_embed("You don't have any photos to sell. Get out there and /patrol first.")
                 )
                 return
 
-            await set_cooldown(session, user.discord_id, "bugle_submit", BUGLE_COOLDOWN_SECONDS)
+            await set_cooldown(
+                session, user.discord_id, "bugle_submit", scaled(BUGLE_COOLDOWN_SECONDS, perks)
+            )
 
         breakdown = ", ".join(f"{count}x {quality}" for quality, count in result.breakdown.items())
         complications = []

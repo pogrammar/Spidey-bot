@@ -17,6 +17,7 @@ from services.shakedown_service import (
     attempt_shakedown,
     count_stealth_protections,
 )
+from services.server_perks import resolve_perks, scaled
 from utils.embeds import error_embed
 from utils.icons import emoji
 from utils.v2_embeds import StaticView
@@ -135,7 +136,14 @@ class PvpCog(commands.Cog):
                 return
 
             result = await attempt_shakedown(session, thief, victim)
-            await set_cooldown(session, thief.discord_id, "shakedown", SHAKEDOWN_COOLDOWN_SECONDS)
+            perks = await resolve_perks(session, ctx)
+            await set_cooldown(
+                session, thief.discord_id, "shakedown", scaled(SHAKEDOWN_COOLDOWN_SECONDS, perks)
+            )
+            # TARGET_PROTECTION_SECONDS is deliberately NOT scaled. It belongs to the
+            # victim, and scaling it by the *thief's* perks would turn Lower Cooldown into
+            # "my level shortens your protection" — a perk that reaches into someone else's
+            # account. The victim's own perks don't apply either: this isn't their command.
             await set_cooldown(session, victim.discord_id, "shakedown_target", TARGET_PROTECTION_SECONDS)
 
         if result.stealth_protected:

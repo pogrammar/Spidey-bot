@@ -38,6 +38,31 @@ ADMIN_DISCORD_IDS = {int(uid) for uid in _admin_ids.split(",") if uid.strip()}
 
 DB_URL = os.environ.get("SPIDEY_DB_URL", "sqlite+aiosqlite:///./spidey.db")
 
+# The community server whose boost/level roles grant the perks in services/server_perks.py,
+# plus the three role ids themselves. Read from .env rather than hardcoded because the
+# tester bot and the live bot point at different guilds with different role ids.
+#
+# PERKS_GUILD_ID unset switches the whole feature off — server_perks.perks_from returns
+# NO_PERKS and every hook falls back to its unperked branch. That default is deliberate:
+# the live bot pulls this code before its .env has the ids, and a half-configured perk
+# system that fires in the wrong guild is worse than one that does nothing.
+#
+# Perks are also scoped to this guild at *use* time, not just at grant time: a member who
+# runs a command in a DM or in some other server gets nothing, because the role list the
+# resolver reads arrives inside the interaction and there is no such list anywhere else.
+_perks_guild_id = os.environ.get("PERKS_GUILD_ID", "").strip()
+PERKS_GUILD_ID = int(_perks_guild_id) if _perks_guild_id else None
+
+
+def _role_id(name: str) -> int | None:
+    raw = os.environ.get(name, "").strip()
+    return int(raw) if raw else None
+
+
+PERKS_BOOSTER_ROLE_ID = _role_id("PERKS_BOOSTER_ROLE_ID")
+PERKS_LEVEL_5_ROLE_ID = _role_id("PERKS_LEVEL_5_ROLE_ID")
+PERKS_LEVEL_10_ROLE_ID = _role_id("PERKS_LEVEL_10_ROLE_ID")
+
 # Optional: an UptimeRobot Heartbeat monitor's push URL. Left unset, the heartbeat
 # cog just doesn't start — no error, no behavior change. (Requires a paid UptimeRobot
 # plan — Heartbeat monitors aren't on the free tier.)

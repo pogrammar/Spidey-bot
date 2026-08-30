@@ -45,6 +45,7 @@ EXTENSIONS = [
     "cogs.help_cog",
     "cogs.admin_cog",
     "cogs.patreon_cog",
+    "cogs.perks_cog",
     "cogs.heartbeat_cog",
     "cogs.health_cog",
     "cogs.tunnel_cog",

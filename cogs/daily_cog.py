@@ -7,6 +7,7 @@ from db.base import async_session
 from services.cooldowns import format_remaining
 from services.daily_service import claim_daily, get_streak_status
 from services.economy import get_or_create_user
+from services.server_perks import resolve_perks
 from utils.embeds import error_embed
 from utils.icons import emoji
 from utils.v2_embeds import StaticView
@@ -38,7 +39,8 @@ class DailyCog(commands.Cog):
     async def claim(self, ctx: discord.ApplicationContext):
         async with async_session() as session:
             user = await get_or_create_user(session, ctx.author.id)
-            ok, message, result = await claim_daily(session, user)
+            perks = await resolve_perks(session, ctx)
+            ok, message, result = await claim_daily(session, user, perks)
             status = await get_streak_status(session, user) if ok else None
 
         if not ok:

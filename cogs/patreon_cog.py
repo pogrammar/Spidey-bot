@@ -40,11 +40,28 @@ from utils.v2_embeds import StaticView, static_container
 # NOTE: Accelerated Growth (Reputation XP boost / Supportive Allies) is
 # deliberately NOT wired to Patreon tiers — that mechanic belongs to the
 # separate server-boost-exclusive perk track (discord.gg/spider-man Nitro
-# boosting), which was built once, fully reverted, and hasn't been rebuilt.
-# The underlying code (services/patreon_service.py's get_growth_choice/
-# set_growth_choice, the hooks in economy.py/ally_service.py) is left intact
-# and dormant on purpose — don't remove it, don't wire a /patreon command to
-# it, it's for the other track whenever that gets rebuilt.
+# boosting). That track was rebuilt on 2026-08-30 and the mechanic now lives
+# there: services/server_perks.py owns "who has which perk", and the pair is
+# resolved by ServerPerks._pair from the invoker's level role — Higher Reputation
+# at level 5, and at level 10 the two share one slot that the member moves
+# between with /perks choose.
+#
+# Both hooks moved with it. economy.add_reputation and
+# ally_service._decayed_happiness now branch on the `perks` argument threaded
+# down from the cog, and no longer call get_growth_choice at all — replaced
+# rather than OR'd, because _pair already decides the pair and a second branch
+# would apply the same multiplier twice to anyone with a stored choice.
+#
+# patreon_service.get_growth_choice/set_growth_choice and the growth_perk_choice
+# column stay on disk and are now unreferenced — the stored choice that came back
+# on 2026-08-30 lives on users.perk_pair_choice instead, because this row only
+# exists for a linked Patreon account and the pick belongs to any level 10 member.
+# Left intact on purpose: the one thing the other track still takes from Patreon is
+# that a live Arachnid+ pledge decides which half of that slot a level 10 member
+# *starts* on (the XP boost, since they were already paying for it). It moves the
+# default, it does not veto the choice — and the two can never both be live, because
+# held together they compound to a sustained 1.3 * 1.2 = 1.56x. See the note beside
+# ServerPerks._pair.
 
 # TIER_RANK_LABELS is imported from patreon_service rather than defined here — /shop's
 # purchase refusals need to name a tier too, and a service can't import a cog for it.

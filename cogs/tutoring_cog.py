@@ -9,6 +9,7 @@ from services.busy import get_busy, set_busy
 from services.cooldowns import format_remaining, get_remaining_seconds, set_cooldown
 from services.economy import get_or_create_user
 from services.patreon_service import get_tier_rank
+from services.server_perks import resolve_perks
 from services.tutoring_service import TUTORING_LOCK_SECONDS, run_tutoring_session
 from utils.embeds import error_embed
 from utils.icons import emoji
@@ -52,7 +53,8 @@ class TutoringCog(commands.Cog):
                 return
 
             tier_rank = await get_tier_rank(session, user.discord_id)
-            result = await run_tutoring_session(session, user, tier_rank)
+            perks = await resolve_perks(session, ctx)
+            result = await run_tutoring_session(session, user, tier_rank, perks)
             await set_cooldown(session, user.discord_id, "tutoring", TUTORING_LOCK_SECONDS)
             await set_busy(session, user.discord_id, "tutoring", TUTORING_LOCK_SECONDS)
 

@@ -14,6 +14,7 @@ from services.battle_service import (
     resolve_gadget,
     resolve_venom_blast,
     start_battle,
+    suit_damage_multiplier_for,
     venom_blast_ready,
 )
 from services.busy import get_busy
@@ -37,6 +38,7 @@ from services.patrol_service import (
     compute_base_xp,
     finish_noncombat_patrol,
 )
+from services.server_perks import NO_PERKS, ServerPerks, resolve_perks, scaled
 from services.suit_service import repair_readiness_warning
 from utils.embeds import error_embed
 from utils.icons import emoji, item_label, thumbnail
@@ -140,20 +142,32 @@ def _biomorphic_cash_line(amount: int) -> str:
     return f"\n-# {lead}The webbing shook an extra ${amount:,} loose.{trail}"
 
 
-def _webbing_note(biomorphic: bool) -> str:
+def _webbing_note(biomorphic: bool, from_server_perk: bool = False) -> str:
     """Credits the vial-free patrol to whichever grade of the webbing perk is actually
     running. Organic and Biomorphic aren't two perks that stack — Biomorphic is what
     Organic grows into, so a Symbiote subscriber has no Organic Webbing to speak of
     any more and shouldn't be told a lower tier's perk is what saved them the vial.
 
-    Perk glyph leads, tier badge trails, tier name never spelled out (GAME_DESIGN.md
+    Perk glyph leads, source badge trails, source never spelled out (GAME_DESIGN.md
     §9). This one does spell out the *perk's* name, deliberately: it's the only place a
     player learns which grade of webbing they're running, and the two grades are the
-    whole point of the line."""
+    whole point of the line.
+
+    `from_server_perk` swaps the trailing badge for the booster one, because Organic is
+    the single perk reachable from both tracks (§22) and the tier badge is wrong for a
+    booster who holds no pledge — it would credit a paid tier they don't have, which is
+    the same class of misattribution as telling a Symbiote subscriber that Arachnid's
+    perk saved them the vial. The badge is the only thing that changes: the effect and
+    the perk's name really are identical, so claiming otherwise would be a second lie."""
     glyph = emoji("biomorphic_webbing" if biomorphic else "organic_webbing")
     lead = f"{glyph} " if glyph else ""
     name = "Biomorphic Webbing" if biomorphic else "Organic Webbing"
-    badge = tier_badge(TIER_RANK_SYMBIOTE if biomorphic else TIER_RANK_ARACHNID)
+    if from_server_perk:
+        # emoji() misses return None until the art is uploaded, and the note is still
+        # correct unbadged — it just doesn't say where the perk came from.
+        badge = emoji("booster")
+    else:
+        badge = tier_badge(TIER_RANK_SYMBIOTE if biomorphic else TIER_RANK_ARACHNID)
     trail = f" {badge}" if badge else ""
     return f"{lead}{name} — no vial needed{trail}"
 
@@ -296,11 +310,21 @@ class GadgetSelect(discord.ui.Select):
 
 
 class PatrolBattleView(discord.ui.DesignerView):
-    def __init__(self, state: BattleState, author_id: int, tier_rank: int, intro_banner: str):
+    def __init__(
+        self, state: BattleState, author_id: int, tier_rank: int, intro_banner: str,
+        perks: ServerPerks = NO_PERKS,
+    ):
         super().__init__(timeout=BATTLE_ROUND_TIMEOUT)
         self.state = state
         self.author_id = author_id
         self.tier_rank = tier_rank
+        # Stored, not re-resolved per callback, for the same reason accent is: these
+        # callbacks only ever see an Interaction. It's also the correct semantics — a
+        # battle started in the perks guild finishes in the perks guild, so leaving the
+        # server mid-fight must not retroactively change the photo the fight already
+        # earned. Higher Integrity is already baked into state.suit_damage_multiplier;
+        # this copy is what finalize_battle needs for the camera and the XP.
+        self.perks = perks
         # Derived from the rank this view is already handed, rather than read from the
         # ambient per-command context — same answer, one less thing to resolve. Stored
         # because _render and _render_final both run from button/select callbacks and
@@ -595,8 +619,12 @@ class PatrolBattleView(discord.ui.DesignerView):
 
         async with async_session() as session:
             user = await get_or_create_user(session, self.author_id)
-            report = await finalize_battle(session, user, self.state, tier_rank=self.tier_rank)
-            await set_cooldown(session, self.author_id, "patrol", PATROL_COOLDOWN_SECONDS)
+            report = await finalize_battle(
+                session, user, self.state, tier_rank=self.tier_rank, perks=self.perks
+            )
+            await set_cooldown(
+                session, self.author_id, "patrol", scaled(PATROL_COOLDOWN_SECONDS, self.perks)
+            )
             suit_warning = await repair_readiness_warning(session, user, self.tier_rank)
 
         self.stop()
@@ -613,8 +641,12 @@ class PatrolBattleView(discord.ui.DesignerView):
 
         async with async_session() as session:
             user = await get_or_create_user(session, self.author_id)
-            report = await finalize_battle(session, user, self.state, tier_rank=self.tier_rank)
-            await set_cooldown(session, self.author_id, "patrol", PATROL_COOLDOWN_SECONDS)
+            report = await finalize_battle(
+                session, user, self.state, tier_rank=self.tier_rank, perks=self.perks
+            )
+            await set_cooldown(
+                session, self.author_id, "patrol", scaled(PATROL_COOLDOWN_SECONDS, self.perks)
+            )
 
         self._render_final(report, suit_warning=None, timed_out=True)
         if self.message is not None:
@@ -639,7 +671,10 @@ def _noncombat_view(result: PatrolResult, suit_warning: str | None) -> StaticVie
     fluid_field_name = item_label("web_fluid_vial", "Web Fluid")
     fields = []
     if result.organic_webbing_active:
-        fields.append((fluid_field_name, _webbing_note(result.biomorphic_webbing_active)))
+        fields.append((
+            fluid_field_name,
+            _webbing_note(result.biomorphic_webbing_active, result.webbing_from_server_perk),
+        ))
     elif result.web_fluid_used:
         fields.append((fluid_field_name, "-1 vial"))
     else:
@@ -680,6 +715,7 @@ class PatrolCog(commands.Cog):
         async with async_session() as session:
             user = await get_or_create_user(session, ctx.author.id)
             tier_rank = await get_tier_rank(session, ctx.author.id)
+            perks = await resolve_perks(session, ctx)
 
             busy = await get_busy(session, user.discord_id)
             if busy is not None:
@@ -708,15 +744,17 @@ class PatrolCog(commands.Cog):
                     await ctx.respond(view=gate_view, files=gate_view.files)
                     return
                 boss_bracket = user.boss_clears + 1
-                start = await begin_boss_patrol(session, user, tier_rank)
+                start = await begin_boss_patrol(session, user, tier_rank, perks)
             else:
-                start = await begin_patrol(session, user, tier_rank)
+                start = await begin_patrol(session, user, tier_rank, perks)
 
             is_combat = start.outcome["key"] in ("crime_bronze", "crime_silver", "crime_gold", "boss")
 
             if not is_combat:
-                result = await finish_noncombat_patrol(session, user, start, tier_rank)
-                await set_cooldown(session, user.discord_id, "patrol", PATROL_COOLDOWN_SECONDS)
+                result = await finish_noncombat_patrol(session, user, start, tier_rank, perks)
+                await set_cooldown(
+                    session, user.discord_id, "patrol", scaled(PATROL_COOLDOWN_SECONDS, perks)
+                )
                 suit_warning = await repair_readiness_warning(session, user, tier_rank)
                 noncombat_view = _noncombat_view(result, suit_warning)
                 await ctx.respond(view=noncombat_view, files=noncombat_view.files)
@@ -741,21 +779,32 @@ class PatrolCog(commands.Cog):
                 base_cash=0,
                 available_gadgets=available_gadgets,
                 enemy_name=boss_name(boss_bracket) if boss_bracket else None,
+                # Higher Integrity is stamped onto the state here rather than read per
+                # round, so the reduction a fight starts with is the one it ends with.
+                # Bosses are deliberately excluded — a boss gate is the one fight whose
+                # suit cost is the point of it.
+                suit_damage_multiplier=suit_damage_multiplier_for(perks, bool(boss_bracket)),
             )
 
             # Lock /patrol for this fight's actual worst-case window (see
             # BATTLE_LOCK_MARGIN_SECONDS above) so a second call can't start an
-            # overlapping fight.
+            # overlapping fight. Deliberately not run through scaled(): this is a state
+            # machine guard, not pacing, and a lock that expires before the fight does is
+            # a race that lets one player hold two battles at once.
             lock_seconds = round(BATTLE_ROUND_TIMEOUT * state.max_rounds) + BATTLE_LOCK_MARGIN_SECONDS
             await set_cooldown(session, user.discord_id, "patrol", lock_seconds)
 
         if start.organic_webbing_active:
-            fluid_note = f" ({_webbing_note(start.biomorphic_webbing_active)})"
+            fluid_note = (
+                f" ({_webbing_note(start.biomorphic_webbing_active, start.webbing_from_server_perk)})"
+            )
         elif start.web_fluid_used:
             fluid_note = ""
         else:
             fluid_note = f" (out of {item_label('web_fluid_vial', 'Web-Fluid')} — cost you ${start.web_fluid_tax:,})"
-        view = PatrolBattleView(state, ctx.author.id, tier_rank, intro_banner=f"{start.flavor}{fluid_note}")
+        view = PatrolBattleView(
+            state, ctx.author.id, tier_rank, intro_banner=f"{start.flavor}{fluid_note}", perks=perks
+        )
         await ctx.respond(view=view, files=view.files)
         view.message = await ctx.interaction.original_response()
 

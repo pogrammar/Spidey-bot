@@ -12,6 +12,7 @@ from services.economy import add_reputation, add_wallet
 from services.gadget_service import roll_gadget_effect
 from services.loot_tables import LOOT_TABLES, rand_range
 from services.patreon_service import TIER_RANK_NONE
+from services.server_perks import NO_PERKS, ServerPerks
 
 TUTORING_LOCK_SECONDS = 2 * 60
 
@@ -40,12 +41,13 @@ class TutoringResult:
 
 
 async def run_tutoring_session(
-    session: AsyncSession, user: User, tier_rank: int = TIER_RANK_NONE
+    session: AsyncSession, user: User, tier_rank: int = TIER_RANK_NONE,
+    perks: ServerPerks = NO_PERKS,
 ) -> TutoringResult:
     data = LOOT_TABLES["tutoring"]
 
-    xp_multiplier = await reputation_xp_multiplier(session, user.discord_id)
-    earnings_multiplier = await earnings_penalty_multiplier(session, user.discord_id)
+    xp_multiplier = await reputation_xp_multiplier(session, user.discord_id, perks)
+    earnings_multiplier = await earnings_penalty_multiplier(session, user.discord_id, perks)
 
     cash = round(rand_range(data["cash"]) * user.reputation_multiplier * earnings_multiplier)
     xp = round(rand_range(data["xp"]) * xp_multiplier)
@@ -74,7 +76,7 @@ async def run_tutoring_session(
     # The actual applied amount, not the pre-penalty/pre-cap roll — a crime penalty
     # (crime_level was just raised above, same session) or a boss-gate ceiling can
     # both silently shrink this below `xp`.
-    actual_xp = await add_reputation(session, user, xp)
+    actual_xp = await add_reputation(session, user, xp, perks)
     await session.commit()
 
     # After the commit above, deliberately: the pickup is a bonus riding on a session that

@@ -54,6 +54,17 @@ class User(Base):
     # a 50/50 coin flip would give. Persisted rather than in-memory so a restart doesn't
     # reset everyone to the same destination and skew the split.
     ad_impressions: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # Which half of the Higher Reputation / Supportive Allies pair a level 10 member wants
+    # — see services/server_perks.py, which owns the values and the resolution. NULL means
+    # "never chosen", which is not the same as either value: the resolver falls back to a
+    # default that depends on the live Patreon pledge, so a NULL here has to stay
+    # distinguishable from an explicit pick.
+    #
+    # On `users` and not reusing PatreonLink.growth_perk_choice, which stores the same two
+    # strings: that row only exists for someone who has linked a Patreon account, and this
+    # choice belongs to any level 10 member of the community server, pledge or not. The
+    # older column stays where it is and stays unreferenced.
+    perk_pair_choice: Mapped[str | None] = mapped_column(String, nullable=True)
 
     inventory_items: Mapped[list["InventoryItem"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"

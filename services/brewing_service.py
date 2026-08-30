@@ -12,13 +12,26 @@ from services.cooldowns import format_remaining, is_bypass_enabled
 from services.economy import add_wallet
 from services.inventory_service import add_item
 from services.loot_tables import rand_range
+from services.server_perks import NO_PERKS, ServerPerks
 
 BREW_COST = 30
 BREW_DURATION = datetime.timedelta(minutes=5)
+
+# Quicker Lab Brewing (community server Level 10 perk). 5min -> 3min.
+#
+# Note the arithmetic isn't linear the way the copy makes it sound: -40% on the timer is
+# +67% on throughput. 1.5min was rejected as the target because it undercuts Organic
+# Webbing — brew fast enough and free vials stop being worth having (GAME_DESIGN.md 9.5).
+QUICKER_BREW_DURATION = datetime.timedelta(minutes=3)
+
 YIELD_RANGE = [2, 4]
 MUTATION_CHANCE = 0.08
 VIAL_ITEM_KEY = "web_fluid_vial"
 MUTATION_ITEM_KEY = "unstable_web_fluid"
+
+
+def brew_duration(perks: ServerPerks) -> datetime.timedelta:
+    return QUICKER_BREW_DURATION if perks.quicker_brewing else BREW_DURATION
 
 
 @dataclass
@@ -59,17 +72,23 @@ async def clear_brew(session: AsyncSession, user_id: int) -> bool:
     return True
 
 
-async def start_brew(session: AsyncSession, user: User) -> tuple[bool, str]:
+async def start_brew(
+    session: AsyncSession, user: User, perks: ServerPerks = NO_PERKS
+) -> tuple[bool, str]:
+    """Quicker Lab Brewing is stamped into ready_at here and never re-read, so unlike the
+    ally-decay perk there's no window this can be wrong about: the batch was started in the
+    server, so the batch is quick. Leaving the server mid-brew doesn't slow it back down."""
     if await _get_active_brew(session, user.discord_id) is not None:
         return False, "You've already got a batch cooking. Check /lab status."
     if user.wallet < BREW_COST:
         return False, f"Brewing chemicals cost ${BREW_COST} and your wallet's short."
 
+    duration = brew_duration(perks)
     await add_wallet(session, user, -BREW_COST, reason="brewing:start")
-    ready_at = datetime.datetime.utcnow() + BREW_DURATION
+    ready_at = datetime.datetime.utcnow() + duration
     session.add(Brew(user_id=user.discord_id, ready_at=ready_at))
     await session.commit()
-    return True, f"Batch started for ${BREW_COST}. Ready in {format_remaining(BREW_DURATION.total_seconds())}."
+    return True, f"Batch started for ${BREW_COST}. Ready in {format_remaining(duration.total_seconds())}."
 
 
 async def collect_brew(session: AsyncSession, user: User) -> tuple[bool, str, CollectResult | None]:

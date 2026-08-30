@@ -4,13 +4,19 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import Ally, Brew, Cooldown, GiftUsage, InventoryItem, Item, MarketListing, PendingPhoto, Transaction, User
-from services.patreon_service import GROWTH_CHOICE_XP, get_growth_choice
+from services.server_perks import NO_PERKS, ServerPerks
 from utils.leveling import xp_for_level
 
 STARTER_CAMERA_KEY = "camera"
 
-# Accelerated Growth (Arachnid+ perk, "xp" choice) — middle of the locked 25-35%
-# range, same convention as every other perk here.
+# Higher Reputation (server Level 5 perk) — middle of the locked 25-35% range, same
+# convention as every other perk here.
+#
+# Named for the Accelerated Growth "xp" choice it used to be gated behind. That gate is
+# gone: the mechanic belongs to the server perk track (see cogs/patreon_cog.py's note,
+# which said so all along), and services/server_perks.py now owns who gets it. A live
+# Arachnid+ pledge still matters, but as a *shield* that keeps this perk switched on at
+# Level 10 rather than as the thing that grants it — see ServerPerks._pair.
 ACCELERATED_GROWTH_XP_MULTIPLIER = 1.3
 
 # Every 5th reputation level is boss-gated — XP still accrues from patrols, but is
@@ -109,17 +115,22 @@ async def add_bank(session: AsyncSession, user: User, amount: int, reason: str) 
     return actual_delta
 
 
-async def add_reputation(session: AsyncSession, user: User, xp: int) -> int:
+async def add_reputation(
+    session: AsyncSession, user: User, xp: int, perks: ServerPerks = NO_PERKS
+) -> int:
     """Clamped at the next uncleared boss gate — a losing or below-gate patrol still
     grants XP normally, but nothing pushes you past a gate you haven't beaten yet.
     Also cut by CRIME_XP_PENALTY_MULTIPLIER while crime_level is high. Returns the
     actual XP applied (may be less than requested if capped or penalized) — same
     "return what really happened" contract as add_wallet, so callers can display
-    the real number instead of the pre-adjustment roll."""
+    the real number instead of the pre-adjustment roll.
+
+    perks defaults to NO_PERKS so every existing caller keeps its old behaviour; the four
+    that can grant Higher Reputation thread the invoker's perks through instead."""
     gained = max(0, xp)
     if user.crime_level >= HIGH_CRIME_THRESHOLD:
         gained = round(gained * CRIME_XP_PENALTY_MULTIPLIER)
-    if await get_growth_choice(session, user.discord_id) == GROWTH_CHOICE_XP:
+    if perks.higher_reputation:
         gained = round(gained * ACCELERATED_GROWTH_XP_MULTIPLIER)
     cap = xp_for_level(next_boss_gate_level(user))
     before = user.reputation_xp

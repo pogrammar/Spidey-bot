@@ -8,6 +8,13 @@
     "price": 150
   },
   {
+    "key": "camera_bronze",
+    "name": "Bronze-Grade Camera",
+    "category": "tool",
+    "description": "Salvaged glass, properly mounted. Half as likely to break under fire as the beat-up 35mm, and 1 shot in 5 comes out a quality tier better than it should have. Not for sale at any price — it is handed out for reaching level 10 in the community server, and it shoots at stock numbers anywhere else. Fitting it strips any older camera body you own for parts: the old one is gone, not stashed.",
+    "max_durability": 100
+  },
+  {
     "key": "camera_silver",
     "name": "Silver-Grade Camera",
     "category": "tool",

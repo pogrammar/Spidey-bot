@@ -14,6 +14,7 @@ from services.economy import add_reputation, add_wallet
 from services.gadget_service import MAX_UPGRADE_LEVEL, list_usable_gadgets
 from services.inventory_service import add_item
 from services.loot_tables import rand_range, weighted_choice
+from services.server_perks import NO_PERKS, ServerPerks
 from utils.icons import item_label
 
 DAILY_COMMAND_KEY = "daily"
@@ -94,7 +95,9 @@ async def _grant_free_gadget_upgrade(session: AsyncSession, user: User) -> str |
     return item_label(target.item_key, item.name) if item else target.item_key
 
 
-async def claim_daily(session: AsyncSession, user: User) -> tuple[bool, str, DailyClaimResult | None]:
+async def claim_daily(
+    session: AsyncSession, user: User, perks: ServerPerks = NO_PERKS
+) -> tuple[bool, str, DailyClaimResult | None]:
     remaining = await get_remaining_seconds(session, user.discord_id, DAILY_COMMAND_KEY)
     if remaining > 0:
         return False, f"Already claimed today. Come back in {format_remaining(remaining)}.", None
@@ -184,7 +187,10 @@ async def claim_daily(session: AsyncSession, user: User) -> tuple[bool, str, Dai
     await add_wallet(session, user, cash, reason="daily:claim")
     # The actual applied amount, not the pre-penalty/pre-cap roll — a crime penalty
     # or a boss-gate ceiling can both silently shrink this below `xp`.
-    actual_xp = await add_reputation(session, user, xp)
+    actual_xp = await add_reputation(session, user, xp, perks)
+    # DAILY_COOLDOWN_SECONDS is deliberately NOT run through server_perks.scaled(): the 24h
+    # window *is* the streak definition, so shortening it would let a Level 5 member claim
+    # twice a day and break the streak ladder outright.
     await set_cooldown(session, user.discord_id, DAILY_COMMAND_KEY, DAILY_COOLDOWN_SECONDS)
     await session.commit()
 

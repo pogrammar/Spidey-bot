@@ -11,7 +11,12 @@ from services.patreon_service import (
     get_tier_rank,
     tier_requirement_label,
 )
-from services.patrol_service import CAMERA_FAMILY_KEYS, get_equipped_camera
+from services.patrol_service import (
+    CAMERA_BRONZE_ITEM_KEY,
+    CAMERA_FAMILY_KEYS,
+    get_equipped_camera,
+)
+from services.server_perks import ServerPerks
 from utils.icons import item_label
 
 # GATED_ITEM_MIN_RANK moved to patreon_service on 2026-08-23 — it's re-checked at use
@@ -111,6 +116,54 @@ async def scrap_note(session: AsyncSession, scrapped: list[str]) -> str:
         row = await session.get(Item, key)
         labels.append(item_label(key, row.name if row is not None else key))
     return f" Stripped {' and '.join(labels)} for parts."
+
+
+async def grant_bronze_camera(
+    session: AsyncSession, user_id: int, perks: ServerPerks
+) -> str | None:
+    """Hands over the Bronze camera the community server's Level 10 role earns, once.
+
+    Returns a sentence to show the player, or None if there was nothing to do — which is
+    the overwhelmingly common case, since this is checked on a live role rather than
+    recorded as claimed anywhere. Idempotency comes from the inventory itself: whoever
+    already shoots on Bronze or better is left alone.
+
+    Automatic rather than a claim button, per the owner: nothing in this track should make
+    the player pick something. That decision is *why* this returns a sentence instead of
+    just committing. install_tool deletes the base camera body, and its contract is that a
+    caller handing over a tool has to say what was destroyed — a silent auto-grant would
+    scrap a $150 camera with nothing rendered anywhere, which is the exact bug report that
+    contract exists to prevent.
+
+    Someone already on Silver or Gold is skipped rather than downgraded. install_tool only
+    ever scraps *lower* tiers, so a grant here couldn't destroy their paid body — but it
+    would demote a $1,000 camera to a free one, which is the same trade buy_item refuses
+    outright. Nothing to grant is the right answer when the player already has better.
+
+    Does not commit — see install_tool; the caller owns the transaction.
+    """
+    if not perks.bronze_camera:
+        return None
+
+    equipped = await get_equipped_camera(session, user_id)
+    if equipped is not None and CAMERA_FAMILY_KEYS.index(
+        equipped.item_key
+    ) >= CAMERA_FAMILY_KEYS.index(CAMERA_BRONZE_ITEM_KEY):
+        return None
+
+    item = await session.get(Item, CAMERA_BRONZE_ITEM_KEY)
+    if item is None:
+        # data/items.json is seeded on every startup (db.seed), so this only happens if
+        # the entry was removed. Silently doing nothing beats raising inside a
+        # before_invoke hook that must never block the command the player actually ran.
+        return None
+
+    scrapped = await scrap_note(session, await install_tool(session, user_id, item))
+    return (
+        f"Level 10 in the server — {item_label(item.key, item.name)} is yours, fitted and "
+        f"ready.{scrapped} It shoots at stock numbers if you ever lose the role, and comes "
+        f"straight back with it."
+    )
 
 
 async def buy_item(session: AsyncSession, user: User, item_key: str) -> tuple[bool, str]:

@@ -10,12 +10,11 @@ from db.models import Ally, GiftUsage, Item, User
 from services.biomorphic_service import ACTIVITY_ALLY_VISIT, AmbientScavenge, roll_ambient_scavenge
 from services.inventory_service import remove_item
 from services.patreon_service import (
-    GROWTH_CHOICE_ALLIES,
     TIER_RANK_ARACHNID,
     TIER_RANK_NONE,
-    get_growth_choice,
     get_tier_rank,
 )
+from services.server_perks import NO_PERKS, ServerPerks
 from utils.icons import item_label
 
 ALLY_NAMES = {"aunt_may": "Aunt May", "mj": "MJ"}
@@ -28,10 +27,12 @@ ALLY_NAMES = {"aunt_may": "Aunt May", "mj": "MJ"}
 FULL_DECAY_HOURS = 24.0
 DECAY_PER_HOUR = 100 / FULL_DECAY_HOURS  # 4.17/hour
 
-# Supportive Allies ("allies" growth choice) — NOT currently reachable by Patreon
-# subscribers (that mechanic belongs to the separate, not-yet-rebuilt server-boost
-# perk track — see cogs/patreon_cog.py's note). Left in place dormant. On the 24h
-# baseline this stretches the full drain to ~34h.
+# Supportive Allies (server Level 10 perk) — on the 24h baseline this stretches the full
+# drain to ~34h, and thriving->neglected from 9.6h to ~13.7h.
+#
+# Mutually exclusive with Higher Reputation XP, enforced in ServerPerks._pair rather than
+# here: held together they'd compound, because a longer thriving window is itself an XP
+# bonus via reputation_xp_multiplier below.
 SUPPORTIVE_ALLIES_DECAY_MULTIPLIER = 0.7
 
 # The Arachnid tier's one drawback. The narrative isn't neglect and it isn't the
@@ -115,9 +116,27 @@ async def _get_or_create_gift_usage(
     return usage
 
 
-async def _decayed_happiness(session: AsyncSession, user_id: int, ally: Ally) -> int:
+async def _decayed_happiness(
+    session: AsyncSession, user_id: int, ally: Ally, perks: ServerPerks = NO_PERKS
+) -> int:
+    """Happiness right now, integrated over the time since the last visit.
+
+    Two rate modifiers, and they are deliberately sourced differently:
+
+    - Supportive Allies comes from `perks`, so it only applies to a command run inside the
+      perks guild. That means the same ally can read slightly higher in-server than it
+      does in a DM at the same instant, because the perk applies to the *reading*, not to
+      the window. That's the honest consequence of a guild-scoped perk on a
+      time-integrated value: the alternative is stamping a rate on the row at visit time
+      (a new column and a migration), which would be worth doing only if players start
+      mixing contexts enough to notice.
+    - The Arachnid drawback reads the live tier directly and NOT perks.tier_rank, which
+      would be TIER_RANK_NONE outside the guild. Perks are guild-scoped; a drawback the
+      subscriber accepted is not, and letting someone shed it by running /ally in a DM
+      would make the tier strictly better outside the server than in it.
+    """
     decay_rate = DECAY_PER_HOUR
-    if await get_growth_choice(session, user_id) == GROWTH_CHOICE_ALLIES:
+    if perks.supportive_allies:
         decay_rate *= SUPPORTIVE_ALLIES_DECAY_MULTIPLIER
     if await get_tier_rank(session, user_id) >= TIER_RANK_ARACHNID:
         decay_rate *= 1 + ARACHNID_ALLY_DECAY_INCREASE
@@ -126,9 +145,11 @@ async def _decayed_happiness(session: AsyncSession, user_id: int, ally: Ally) ->
     return max(0, min(100, round(decayed)))
 
 
-async def get_current_happiness(session: AsyncSession, user_id: int, ally_key: str) -> int:
+async def get_current_happiness(
+    session: AsyncSession, user_id: int, ally_key: str, perks: ServerPerks = NO_PERKS
+) -> int:
     ally = await _get_or_create_ally(session, user_id, ally_key)
-    return await _decayed_happiness(session, user_id, ally)
+    return await _decayed_happiness(session, user_id, ally, perks)
 
 
 async def set_happiness(session: AsyncSession, user_id: int, ally_key: str, value: int) -> int:
@@ -153,23 +174,32 @@ async def reset_ally(session: AsyncSession, user_id: int, ally_key: str) -> None
     await session.commit()
 
 
-async def _all_happiness(session: AsyncSession, user_id: int) -> list[int]:
-    return [await get_current_happiness(session, user_id, key) for key in ALLY_NAMES]
+async def _all_happiness(
+    session: AsyncSession, user_id: int, perks: ServerPerks = NO_PERKS
+) -> list[int]:
+    return [await get_current_happiness(session, user_id, key, perks) for key in ALLY_NAMES]
 
 
-async def reputation_xp_multiplier(session: AsyncSession, user_id: int) -> float:
+async def reputation_xp_multiplier(
+    session: AsyncSession, user_id: int, perks: ServerPerks = NO_PERKS
+) -> float:
     """Both Aunt May and MJ thriving (>=70) sharpens his focus — bonus reputation XP
-    from /patrol and /tutoring. Requires both, not just one, to actually earn it."""
-    happiness = await _all_happiness(session, user_id)
+    from /patrol and /tutoring. Requires both, not just one, to actually earn it.
+
+    Takes perks because Supportive Allies decides how much has decayed, and this band is
+    the reason the two perks can't be held together — see ServerPerks._pair."""
+    happiness = await _all_happiness(session, user_id, perks)
     if all(h >= THRIVING_HAPPINESS_THRESHOLD for h in happiness):
         return XP_BONUS_MULTIPLIER
     return 1.0
 
 
-async def earnings_penalty_multiplier(session: AsyncSession, user_id: int) -> float:
+async def earnings_penalty_multiplier(
+    session: AsyncSession, user_id: int, perks: ServerPerks = NO_PERKS
+) -> float:
     """Neglecting either one (<30) costs focus — worse Bugle photos, worse tutoring
     sessions, both paying out less. Either relationship suffering is enough to apply."""
-    happiness = await _all_happiness(session, user_id)
+    happiness = await _all_happiness(session, user_id, perks)
     if any(h < LOW_HAPPINESS_THRESHOLD for h in happiness):
         return EARNINGS_PENALTY_MULTIPLIER
     return 1.0
@@ -182,13 +212,13 @@ async def list_gift_items(session: AsyncSession) -> list[Item]:
 
 async def visit_ally(
     session: AsyncSession, user: User, ally_key: str, gift_key: str | None,
-    tier_rank: int = TIER_RANK_NONE,
+    tier_rank: int = TIER_RANK_NONE, perks: ServerPerks = NO_PERKS,
 ) -> tuple[bool, str, VisitResult | None]:
     if ally_key not in ALLY_NAMES:
         return False, "Never heard of them.", None
 
     ally = await _get_or_create_ally(session, user.discord_id, ally_key)
-    current = await _decayed_happiness(session, user.discord_id, ally)
+    current = await _decayed_happiness(session, user.discord_id, ally, perks)
     visit_seconds = visit_duration_seconds(current)
 
     gift_name: str | None = None

@@ -8,6 +8,7 @@ from db.base import async_session
 from services.brewing_service import BREW_COST, YIELD_RANGE, collect_brew, get_brew_status, start_brew
 from services.economy import get_or_create_user
 from services.patreon_service import PATREON_SHOP_URL, VIAL_BUNDLES, format_bundle_price
+from services.server_perks import resolve_perks
 from utils.embeds import error_embed, link_button_view
 from utils.icons import item_label
 from utils.v2_embeds import StaticView
@@ -170,7 +171,8 @@ class LabCog(commands.Cog):
     async def brew(self, ctx: discord.ApplicationContext):
         async with async_session() as session:
             user = await get_or_create_user(session, ctx.author.id)
-            ok, message = await start_brew(session, user)
+            perks = await resolve_perks(session, ctx)
+            ok, message = await start_brew(session, user, perks)
         if ok:
             view = StaticView(
                 "Chem Lab",

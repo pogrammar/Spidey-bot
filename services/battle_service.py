@@ -30,6 +30,7 @@ from services.patrol_service import (
     roll_donation,
     roll_hazard,
 )
+from services.server_perks import NO_PERKS, ServerPerks
 from utils.icons import emoji
 from utils.leveling import xp_for_level
 
@@ -185,6 +186,23 @@ SCAVENGE_URGENCY_BONUS_MAX = 0.25
 # walking into a fight already at 0% integrity means no protection at all
 UNPROTECTED_INJURY_RANGE = [20, 50]
 UNPROTECTED_CAMERA_BREAK_BONUS = 0.15
+
+# Higher Integrity (community server Level 5 perk) — middle of the locked 25-35% range.
+#
+# Applied to incoming suit damage, NOT by raising the 100-point integrity cap: that cap is
+# hardcoded in five places including repair_suit(), and lifting it was rejected outright
+# (GAME_DESIGN.md 9.5). Taking less damage reaches the same felt outcome — patrols before a
+# repair — without touching a number the rest of the economy reads as fixed.
+#
+# Crime-tier patrols only. A boss fight's damage budget is what makes the gate a gate, so
+# suit_damage_multiplier stays 1.0 there; see suit_damage_multiplier_for() below.
+HIGHER_INTEGRITY_DAMAGE_REDUCTION = 0.30
+
+
+def suit_damage_multiplier_for(perks: ServerPerks, is_boss: bool) -> float:
+    if is_boss or not perks.higher_integrity:
+        return 1.0
+    return 1 - HIGHER_INTEGRITY_DAMAGE_REDUCTION
 
 # Enhanced Strength (Arachnid+ Patreon perk) — bonus Attack damage, crime-tier
 # patrols only. Boss fights excluded for the same reason Enhanced Resilience (the
@@ -535,6 +553,12 @@ class BattleState:
     round_number: int = 1
     max_rounds: int = BASELINE_ROUNDS
     total_suit_damage: int = 0
+    # Higher Integrity, resolved once when the fight starts and carried on the state
+    # rather than passed to _apply_counter. Two reasons: every resolve_* helper feeds
+    # that one sink and none of them would otherwise need to know about perks, and a
+    # fight has to keep the multiplier it began with even if the player's roles change
+    # mid-battle.
+    suit_damage_multiplier: float = 1.0
     bonus_xp: int = 0
     bonus_cash: int = 0
     scavenge_bonus: float = 0.0
@@ -599,6 +623,7 @@ def start_battle(
     base_cash: int,
     available_gadgets: list[tuple[str, str]],
     enemy_name: str | None = None,
+    suit_damage_multiplier: float = 1.0,
 ) -> BattleState:
     stats = ENEMY_STATS[outcome_key]
     combat_difficulty = _combat_difficulty(difficulty)
@@ -633,6 +658,7 @@ def start_battle(
         base_cash=base_cash,
         available_gadgets=available_gadgets,
         max_rounds=num_rounds,
+        suit_damage_multiplier=suit_damage_multiplier,
     )
 
 
@@ -682,6 +708,10 @@ def _enemy_counter(state: BattleState, incoming_multiplier: float = 1.0) -> int:
 
 
 def _apply_counter(state: BattleState, dmg: int) -> None:
+    # The single suit-damage sink for the whole battle, which is why Higher Integrity is
+    # applied here and nowhere else. Rounded per hit rather than on the total so the
+    # number the round narrates is the number that lands.
+    dmg = round(dmg * state.suit_damage_multiplier)
     if dmg > 0:
         state.total_suit_damage += dmg
         state.hits_taken += 1
@@ -970,7 +1000,8 @@ async def resolve_gadget(
 
 
 async def finalize_battle(
-    session: AsyncSession, user: User, state: BattleState, tier_rank: int = TIER_RANK_NONE
+    session: AsyncSession, user: User, state: BattleState,
+    tier_rank: int = TIER_RANK_NONE, perks: ServerPerks = NO_PERKS,
 ) -> BattleReport:
     stats = ENEMY_STATS[state.outcome_key]
     won_clean = state.enemy_hp <= 0 and state.end_reason == "won"
@@ -1001,7 +1032,7 @@ async def finalize_battle(
     # risk that comes with that — unlike a tier-locked gadget, which does nothing and so
     # can't break (see list_usable_gadgets). Making it invulnerable while locked would
     # turn lapsing into its own perk.
-    effective_camera = await get_effective_camera(session, user.discord_id)
+    effective_camera = await get_effective_camera(session, user.discord_id, perks)
     camera = effective_camera.row
     if camera is not None:
         tier_stats = camera_tier_stats(effective_camera.item_key)
@@ -1061,7 +1092,7 @@ async def finalize_battle(
         await add_wallet(session, user, cash, reason=f"patrol_battle:{state.outcome_key}")
     # The actual applied amount, not the pre-penalty/pre-cap roll — a crime penalty
     # or a boss-gate ceiling can both silently shrink this below `xp`.
-    actual_xp_gained = await add_reputation(session, user, xp)
+    actual_xp_gained = await add_reputation(session, user, xp, perks)
 
     boss_cash_reward = 0
     boss_new_level = None
@@ -1091,7 +1122,7 @@ async def finalize_battle(
 
     hazard_flavor = None
     hazard_cash = 0
-    hazard = await roll_hazard(session, user.discord_id)
+    hazard = await roll_hazard(session, user.discord_id, perks)
     if hazard is not None:
         rolled_hazard_cash = rand_range(hazard["cash"])
         # add_wallet clamps at 0 and returns what actually happened — a broke

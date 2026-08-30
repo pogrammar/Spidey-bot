@@ -124,6 +124,11 @@ EMOJI: dict[str, str] = {
     "bank": "<:bank:1538072418260615230>",
     "attack": "<:attack:1538072415991500800>",
     "admin_badge": "<:admin_badge:1538072414095671316>",
+    # Community-server perk badges (cogs/perks_cog.py). Deliberately absent rather than
+    # stubbed: emoji() returns None on a miss and every caller guards on that, so /perks
+    # renders as plain text until these are uploaded. A placeholder id here would render
+    # as literal broken `<:name:0>` markup in the panel, which is worse than no glyph.
+    #   booster, server_level_5, server_level_10
 }
 
 

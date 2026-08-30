@@ -22,30 +22,50 @@ from services.patreon_service import (
     TIER_RANK_SYMBIOTE,
     get_tier_rank,
 )
+from services.server_perks import NO_PERKS, ServerPerks
 from utils.icons import item_label
 
 PATROL_COOLDOWN_SECONDS = 30
 CAMERA_ITEM_KEY = "camera"
+CAMERA_BRONZE_ITEM_KEY = "camera_bronze"
 CAMERA_SILVER_ITEM_KEY = "camera_silver"
 CAMERA_GOLD_ITEM_KEY = "camera_gold"
 # Ordered lowest to highest tier — get_equipped_camera picks the best-tier row if
 # more than one is somehow equipped, and shop_service unequips the rest of this
 # family whenever one is bought, so only one is ever actually equipped in practice.
-CAMERA_FAMILY_KEYS = [CAMERA_ITEM_KEY, CAMERA_SILVER_ITEM_KEY, CAMERA_GOLD_ITEM_KEY]
+#
+# The list index IS the tier, and three places rely on that (get_equipped_camera's
+# tiebreak below, shop_service.install_tool's retire slice, and buy_item's downgrade
+# refusal). Bronze was *inserted* at index 1 rather than appended, which is safe
+# precisely because all three read it through .index() or a slice and never a literal:
+# inserting preserves the relative order of the other three. Reordering would not be
+# safe — swapping silver and gold here would make a $1,000 body scrap a $3,000 one.
+CAMERA_FAMILY_KEYS = [
+    CAMERA_ITEM_KEY,
+    CAMERA_BRONZE_ITEM_KEY,
+    CAMERA_SILVER_ITEM_KEY,
+    CAMERA_GOLD_ITEM_KEY,
+]
 
-# Camera tiers (Patreon-exclusive past the base camera, gated per-key in
-# patreon_service.GATED_ITEM_MIN_RANK, and re-checked at use time by
+# Camera tiers (exclusive past the base camera, and re-checked at use time by
 # get_effective_camera) — break_chance_reduction multiplies down
 # the existing break-chance formula in battle_service.finalize_battle;
 # quality_bump_chance is an independent roll to bump the banked photo's quality up
-# one tier (bronze->silver->gold, capped at gold). Both bump chances (0.60 / 0.80) are
-# copy the subscriber is told outright — "3 in 5" and "4 in 5" — so they're promises
-# rather than interior balance knobs: don't nudge them for tuning, change the promise
-# first (GAME_DESIGN.md §6.2). Break-chance reduction (-70% / -85%) stays a tuned
-# number. Neither knob reaches -100% / 1.00 at any tier on purpose, so camera-break
-# tension and the value of a genuine gold photo both survive the top tier.
+# one tier (bronze->silver->gold, capped at gold). All three bump chances
+# (0.20 / 0.60 / 0.80) are copy the earner is told outright — "1 in 5", "3 in 5" and
+# "4 in 5" — so they're promises rather than interior balance knobs: don't nudge them
+# for tuning, change the promise first (GAME_DESIGN.md §6.2). Break-chance reduction
+# (-50% / -70% / -85%) stays a tuned number. Neither knob reaches -100% / 1.00 at any
+# tier on purpose, so camera-break tension and the value of a genuine gold photo both
+# survive the top tier.
+#
+# Bronze is the odd one out on how it's earned: Silver and Gold are Patreon-gated
+# purchases (patreon_service.GATED_ITEM_MIN_RANK), Bronze is granted free for the
+# community server's Level 10 role and can't be bought at all — it has no price in
+# data/items.json, which is what keeps it out of /shop.
 CAMERA_TIER_STATS = {
     CAMERA_ITEM_KEY: {"break_chance_reduction": 0.0, "quality_bump_chance": 0.0},
+    CAMERA_BRONZE_ITEM_KEY: {"break_chance_reduction": 0.50, "quality_bump_chance": 0.20},
     CAMERA_SILVER_ITEM_KEY: {"break_chance_reduction": 0.70, "quality_bump_chance": 0.60},
     CAMERA_GOLD_ITEM_KEY: {"break_chance_reduction": 0.85, "quality_bump_chance": 0.80},
 }
@@ -289,6 +309,13 @@ class PatrolResult:
     # Organic grows into, so the vial-free behaviour is identical and this only
     # decides which perk the card credits. Never true unless organic_webbing_active is.
     biomorphic_webbing_active: bool = False
+    # Whether the vial-free patrol is owed to the community-server booster perk rather
+    # than to a pledge (§22). Attribution only, and the card needs it because the badge
+    # is otherwise a lie: _webbing_note trails a tier badge, so without this a booster
+    # holding no pledge was credited to Arachnid — a paid tier they don't have. False for
+    # a subscriber who also boosts, since the pledge is the grade with a promise attached
+    # and the two can't both be named on one line.
+    webbing_from_server_perk: bool = False
     ally_xp_bonus: bool = False
     difficulty_level: int = 1
     # How much of cash_gained came from Biomorphic Webbing (Symbiote+ perk), so the
@@ -307,12 +334,17 @@ class PatrolStart:
     web_fluid_tax: int
     organic_webbing_active: bool
     biomorphic_webbing_active: bool
+    webbing_from_server_perk: bool
     difficulty: float
     xp_multiplier: float
 
 
-async def _begin(session: AsyncSession, user: User, outcome: dict, tier_rank: int = TIER_RANK_NONE) -> PatrolStart:
-    # Organic Webbing (Arachnid+ perk) — Peter's body produces its own web fluid
+async def _begin(
+    session: AsyncSession, user: User, outcome: dict,
+    tier_rank: int = TIER_RANK_NONE, perks: ServerPerks = NO_PERKS,
+) -> PatrolStart:
+    # Organic Webbing (Arachnid+ perk, and the community server's boost perk) — Peter's
+    # body produces its own web fluid
     # now, full stop. Not a chance roll: patrol NEVER touches vial inventory or the
     # no-fluid cash tax for an Arachnid+ subscriber. /lab brew still works exactly
     # as before — vials made that way are free to sell, just never spent by their
@@ -323,8 +355,15 @@ async def _begin(session: AsyncSession, user: User, outcome: dict, tier_rank: in
     # prerequisite and Biomorphic does everything it does plus the bonus rolls below,
     # so this is one perk with two grades, not two perks that stack. Only the name
     # the card credits changes, which is why the flag below is separate and derived.
-    organic_webbing_active = tier_rank >= TIER_RANK_ARACHNID
+    #
+    # Boosting the community server grants the same thing by a different route. Two
+    # sources, one effect, no stacking — there's nothing to stack, since the perk is
+    # already absolute.
+    organic_webbing_active = tier_rank >= TIER_RANK_ARACHNID or perks.organic_webbing
     biomorphic_webbing_active = tier_rank >= TIER_RANK_SYMBIOTE
+    # Which of the two routes the card should credit. The pledge wins when both apply:
+    # it's the grade with a promise attached, and one line can only name one source.
+    webbing_from_server_perk = organic_webbing_active and tier_rank < TIER_RANK_ARACHNID
     if organic_webbing_active:
         web_fluid_used = True
         web_fluid_tax = 0
@@ -337,7 +376,7 @@ async def _begin(session: AsyncSession, user: User, outcome: dict, tier_rank: in
 
     difficulty = difficulty_multiplier(user.reputation_level)
     flavor = random.choice(outcome["flavor"])
-    xp_multiplier = await reputation_xp_multiplier(session, user.discord_id)
+    xp_multiplier = await reputation_xp_multiplier(session, user.discord_id, perks)
 
     await session.commit()
     return PatrolStart(
@@ -346,18 +385,25 @@ async def _begin(session: AsyncSession, user: User, outcome: dict, tier_rank: in
         web_fluid_used=web_fluid_used,
         organic_webbing_active=organic_webbing_active,
         biomorphic_webbing_active=biomorphic_webbing_active,
+        webbing_from_server_perk=webbing_from_server_perk,
         web_fluid_tax=web_fluid_tax,
         difficulty=difficulty,
         xp_multiplier=xp_multiplier,
     )
 
 
-async def begin_patrol(session: AsyncSession, user: User, tier_rank: int = TIER_RANK_NONE) -> PatrolStart:
+async def begin_patrol(
+    session: AsyncSession, user: User, tier_rank: int = TIER_RANK_NONE,
+    perks: ServerPerks = NO_PERKS,
+) -> PatrolStart:
     outcome = _roll_patrol_outcome(user.crime_level, tier_rank)
-    return await _begin(session, user, outcome, tier_rank)
+    return await _begin(session, user, outcome, tier_rank, perks)
 
 
-async def begin_boss_patrol(session: AsyncSession, user: User, tier_rank: int = TIER_RANK_NONE) -> PatrolStart:
+async def begin_boss_patrol(
+    session: AsyncSession, user: User, tier_rank: int = TIER_RANK_NONE,
+    perks: ServerPerks = NO_PERKS,
+) -> PatrolStart:
     """Same setup cost as a normal patrol (web fluid, ally XP multiplier) but the
     outcome isn't rolled — you're heading straight for the boss guarding your next
     reputation gate, with flavor themed to that specific villain. xp/cash both come
@@ -366,7 +412,7 @@ async def begin_boss_patrol(session: AsyncSession, user: User, tier_rank: int = 
     curve instead of the player's raw (possibly past-100) reputation level."""
     bracket = user.boss_clears + 1
     outcome = {"key": "boss", "flavor": boss_flavor_lines(bracket), "xp": [0, 0]}
-    start = await _begin(session, user, outcome, tier_rank)
+    start = await _begin(session, user, outcome, tier_rank, perks)
     start.difficulty = difficulty_multiplier(boss_difficulty_level(user))
     return start
 
@@ -376,7 +422,8 @@ def compute_base_xp(start: PatrolStart) -> int:
 
 
 async def finish_noncombat_patrol(
-    session: AsyncSession, user: User, start: PatrolStart, tier_rank: int = TIER_RANK_NONE
+    session: AsyncSession, user: User, start: PatrolStart,
+    tier_rank: int = TIER_RANK_NONE, perks: ServerPerks = NO_PERKS,
 ) -> PatrolResult:
     """Resolves "nothing" and "scenic" outcomes instantly — no battle needed."""
     outcome = start.outcome
@@ -389,6 +436,7 @@ async def finish_noncombat_patrol(
         web_fluid_tax=start.web_fluid_tax,
         organic_webbing_active=start.organic_webbing_active,
         biomorphic_webbing_active=start.biomorphic_webbing_active,
+        webbing_from_server_perk=start.webbing_from_server_perk,
         ally_xp_bonus=start.xp_multiplier > 1.0,
         difficulty_level=user.reputation_level,
     )
@@ -402,12 +450,12 @@ async def finish_noncombat_patrol(
 
     # The actual applied amount, not the pre-penalty/pre-cap roll — a crime penalty
     # or a boss-gate ceiling can both silently shrink this below `xp`.
-    result.xp_gained = await add_reputation(session, user, xp)
+    result.xp_gained = await add_reputation(session, user, xp, perks)
     crime_decay = rand_range(CRIME_LEVEL_DECAY_RANGE)
     user.crime_level = max(0, user.crime_level - crime_decay)
     result.crime_level_delta = -crime_decay
 
-    hazard = await roll_hazard(session, user.discord_id)
+    hazard = await roll_hazard(session, user.discord_id, perks)
     if hazard is not None:
         rolled_hazard_cash = rand_range(hazard["cash"])
         # add_wallet clamps at 0 and returns what actually happened — a broke
@@ -485,7 +533,9 @@ class EffectiveCamera:
         return item_label(self.item_key, self.name)
 
 
-async def get_effective_camera(session: AsyncSession, user_id: int) -> EffectiveCamera:
+async def get_effective_camera(
+    session: AsyncSession, user_id: int, perks: ServerPerks = NO_PERKS
+) -> EffectiveCamera:
     """The equipped camera, downgraded to the stock body if their Patreon tier no longer
     clears it.
 
@@ -508,14 +558,26 @@ async def get_effective_camera(session: AsyncSession, user_id: int) -> Effective
     lapse leaves a Gold owner shooting the Gold body at stock numbers.
 
     A tier lapse never deletes anything — a $3,000 body comes straight back the moment
-    they resubscribe."""
+    they resubscribe.
+
+    Bronze rides the same contract off a different gate: it's granted for the community
+    server's Level 10 role, so losing that role (or running the command anywhere but that
+    guild) leaves the Bronze body shooting at stock numbers, and it comes straight back on
+    re-level. Deliberately NOT registered in GATED_ITEM_MIN_RANK — that map is keyed on
+    Patreon rank, and a `min_rank` for Bronze would make a subscriber's pledge unlock a
+    perk the server role is supposed to own."""
     row = await get_equipped_camera(session, user_id)
     item_key = CAMERA_ITEM_KEY
     tier_locked = False
 
     if row is not None:
         min_rank = GATED_ITEM_MIN_RANK.get(row.item_key)
-        if min_rank is None:
+        if row.item_key == CAMERA_BRONZE_ITEM_KEY:
+            if perks.bronze_camera:
+                item_key = row.item_key
+            else:
+                tier_locked = True
+        elif min_rank is None:
             item_key = row.item_key
         else:
             # Only reached for a Silver/Gold owner, so the base-camera majority never
@@ -551,12 +613,14 @@ def roll_donation() -> dict | None:
     return None
 
 
-async def roll_hazard(session: AsyncSession, user_id: int) -> dict | None:
+async def roll_hazard(
+    session: AsyncSession, user_id: int, perks: ServerPerks = NO_PERKS
+) -> dict | None:
     for hazard in LOOT_TABLES["hazards"]:
         chance = hazard["chance"]
         ally_key = HAZARD_ALLY_KEY.get(hazard["key"])
         if ally_key is not None:
-            happiness = await get_current_happiness(session, user_id, ally_key)
+            happiness = await get_current_happiness(session, user_id, ally_key, perks)
             if happiness < LOW_HAPPINESS_THRESHOLD:
                 chance *= NEGLECT_HAZARD_MULTIPLIER
         if random.random() < chance:

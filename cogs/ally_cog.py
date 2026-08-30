@@ -11,6 +11,7 @@ from services.busy import get_busy, set_busy
 from services.cooldowns import format_remaining
 from services.economy import get_or_create_user
 from services.patreon_service import TIER_RANK_ARACHNID, get_tier_rank, tier_badge
+from services.server_perks import resolve_perks
 from utils.embeds import error_embed
 from utils.v2_embeds import StaticView
 
@@ -46,8 +47,10 @@ class AllyCog(commands.Cog):
     async def check(self, ctx: discord.ApplicationContext):
         async with async_session() as session:
             user = await get_or_create_user(session, ctx.author.id)
+            perks = await resolve_perks(session, ctx)
             happiness = {
-                key: await get_current_happiness(session, user.discord_id, key) for key in ALLY_NAMES
+                key: await get_current_happiness(session, user.discord_id, key, perks)
+                for key in ALLY_NAMES
             }
             tier_rank = await get_tier_rank(session, ctx.author.id)
 
@@ -90,7 +93,8 @@ class AllyCog(commands.Cog):
                 return
 
             tier_rank = await get_tier_rank(session, user.discord_id)
-            ok, message, result = await visit_ally(session, user, who, gift, tier_rank)
+            perks = await resolve_perks(session, ctx)
+            ok, message, result = await visit_ally(session, user, who, gift, tier_rank, perks)
             if not ok:
                 await ctx.respond(embed=error_embed(message))
                 return

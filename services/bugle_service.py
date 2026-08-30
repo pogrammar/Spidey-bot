@@ -13,6 +13,7 @@ from services.economy import add_wallet
 from services.gadget_service import roll_gadget_effect
 from services.loot_tables import LOOT_TABLES, rand_float_range, rand_range
 from services.patreon_service import TIER_RANK_NONE
+from services.server_perks import NO_PERKS, ServerPerks
 
 BUGLE_COOLDOWN_SECONDS = 60
 
@@ -50,13 +51,15 @@ async def _fetch_pending(session: AsyncSession, user: User) -> list[PendingPhoto
     return list((await session.execute(stmt)).scalars())
 
 
-async def get_pending_summary(session: AsyncSession, user: User) -> PendingSummary:
+async def get_pending_summary(
+    session: AsyncSession, user: User, perks: ServerPerks = NO_PERKS
+) -> PendingSummary:
     """Read-only look at what's sitting in the pending-photos queue, with an estimated
     sell range (actual payout on submit still has JJJ's haggling randomness baked in)."""
     pending = await _fetch_pending(session, user)
     payouts = LOOT_TABLES["bugle_payouts"]
     jjj_lo, jjj_hi = LOOT_TABLES["jjj_multiplier"]
-    earnings_multiplier = await earnings_penalty_multiplier(session, user.discord_id)
+    earnings_multiplier = await earnings_penalty_multiplier(session, user.discord_id, perks)
 
     summary = PendingSummary()
     for photo in pending:
@@ -69,7 +72,8 @@ async def get_pending_summary(session: AsyncSession, user: User) -> PendingSumma
 
 
 async def submit_photos(
-    session: AsyncSession, user: User, tier_rank: int = TIER_RANK_NONE
+    session: AsyncSession, user: User, tier_rank: int = TIER_RANK_NONE,
+    perks: ServerPerks = NO_PERKS,
 ) -> BugleResult | None:
     """Sells every pending photo. Returns None if there's nothing to submit."""
     pending = await _fetch_pending(session, user)
@@ -77,7 +81,7 @@ async def submit_photos(
     if not pending:
         return None
 
-    earnings_multiplier = await earnings_penalty_multiplier(session, user.discord_id)
+    earnings_multiplier = await earnings_penalty_multiplier(session, user.discord_id, perks)
     result = BugleResult(ally_earnings_penalty=earnings_multiplier < 1.0)
     payouts = LOOT_TABLES["bugle_payouts"]
 
