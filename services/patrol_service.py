@@ -31,8 +31,9 @@ CAMERA_BRONZE_ITEM_KEY = "camera_bronze"
 CAMERA_SILVER_ITEM_KEY = "camera_silver"
 CAMERA_GOLD_ITEM_KEY = "camera_gold"
 # Ordered lowest to highest tier — get_equipped_camera picks the best-tier row if
-# more than one is somehow equipped, and shop_service unequips the rest of this
-# family whenever one is bought, so only one is ever actually equipped in practice.
+# more than one is somehow equipped. That tiebreak is a floor, not the guarantee:
+# shop_service.install_tool deletes the lower tiers of this family and unequips the higher
+# ones whenever one is handed over, so only one is ever actually equipped.
 #
 # The list index IS the tier, and three places rely on that (get_equipped_camera's
 # tiebreak below, shop_service.install_tool's retire slice, and buy_item's downgrade

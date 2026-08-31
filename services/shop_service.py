@@ -39,7 +39,8 @@ async def _get_tool_row(session: AsyncSession, user_id: int, item_key: str) -> I
 
 async def install_tool(session: AsyncSession, user_id: int, item: Item) -> list[str]:
     """Put a tool in someone's hands the way a tool has to be held: equipped, at full
-    durability, with any lower-tier sibling in its family deleted.
+    durability, with any lower-tier sibling in its family deleted and any higher-tier one
+    unequipped, so exactly one row in the family is ever active.
 
     Returns the item_keys it destroyed, so the caller can *say so*. That return value is
     not optional politeness: this function silently deletes paid-for gear, and a player
@@ -83,6 +84,35 @@ async def install_tool(session: AsyncSession, user_id: int, item: Item) -> list[
         for retired in (await session.execute(stmt)).scalars():
             scrapped.append(retired.item_key)
             await session.delete(retired)
+
+        # Anything ABOVE the incoming tier survives the slice, and it has to be unequipped
+        # or this function leaves two equipped bodies behind. Only one path reaches this:
+        # `/admin inventory give-item` handing over a lower camera than the one already in
+        # use — buy_item refuses that trade outright and grant_bronze_camera short-circuits
+        # on it, so an ordinary player can never get here. It is still worth closing,
+        # because the symptom is not "the wrong camera shoots": get_equipped_camera
+        # tiebreaks on the family index and would keep using the better body, so the grant
+        # would appear to do nothing while /inventory and every tool autocomplete showed two
+        # simultaneously active cameras.
+        #
+        # Unequipped rather than deleted, unlike the slice above. Deleting here would mean
+        # an admin granting a $150 Bronze destroys a $3,000 Gold — the exact trade the
+        # lower-tiers-only slice exists to prevent. The cost is a surviving unequipped row,
+        # which is the state the owner had removed on 2026-08-24 (see the note above): it is
+        # unreachable, and economy_cog annotates a tool line only when it's equipped or
+        # tier-locked, so it renders bare next to the working camera. That is the better half
+        # of the trade here — the row is recoverable by hand, a deleted Gold isn't — but it
+        # does mean an admin downgrade is worth doing deliberately.
+        for demoted in (
+            await session.execute(
+                select(InventoryItem).where(
+                    InventoryItem.user_id == user_id,
+                    InventoryItem.item_key.in_(CAMERA_FAMILY_KEYS[incoming_tier + 1 :]),
+                    InventoryItem.equipped.is_(True),
+                )
+            )
+        ).scalars():
+            demoted.equipped = False
 
     existing = await _get_tool_row(session, user_id, item.key)
     if existing is not None:
