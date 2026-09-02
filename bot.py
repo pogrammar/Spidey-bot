@@ -53,6 +53,25 @@ EXTENSIONS = [
     "cogs.invite_cog",
 ]
 
+# Extensions held back until the feature they front is actually configured. The gate is a
+# callable so it reads config at load time rather than at import time.
+#
+# `PERKS_GUILD_ID` unset already makes the perks themselves inert — server_perks.perks_from
+# returns NO_PERKS and every hook takes its unperked branch (config.py:45). What it does not
+# do is stop `/perks status` and `/perks choose` from registering globally, and a registered
+# command is a command players find and run. It would answer, truthfully and uselessly, that
+# nothing is live, while naming a community server whose role ids the bot was never given.
+#
+# So the cog is skipped outright instead of loaded and neutered: not registering is the only
+# way a slash command is genuinely absent. This is what lets the perks ride along on the live
+# bot in full, invisible, until its .env gets the four ids — the two-bot rule (anything the
+# live bot needs must default to off in code) applied to the command surface as well as the
+# mechanics. cogs/help_cog.py's FOOTER_LINES reads the same flag, and has to: naming a
+# command that isn't registered is worse than not naming one that is.
+CONDITIONAL_EXTENSIONS = {
+    "cogs.perks_cog": lambda: config.PERKS_GUILD_ID is not None,
+}
+
 STREAM_URL = "https://www.twitch.tv/betchespy"
 
 # MUST be online. A Streaming activity only gets the purple "live" treatment on a
@@ -144,6 +163,10 @@ async def main():
     log.info("Database ready.")
 
     for extension in EXTENSIONS:
+        gate = CONDITIONAL_EXTENSIONS.get(extension)
+        if gate is not None and not gate():
+            log.info("Skipping %s — its feature isn't configured.", extension)
+            continue
         bot.load_extension(extension)
 
     # After every extension has loaded (so every cog's routes are already

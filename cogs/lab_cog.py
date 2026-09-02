@@ -5,7 +5,14 @@ import discord
 from discord.ext import commands
 
 from db.base import async_session
-from services.brewing_service import BREW_COST, YIELD_RANGE, collect_brew, get_brew_status, start_brew
+from services.brewing_service import (
+    BREW_COST,
+    YIELD_RANGE,
+    collect_brew,
+    format_brew_remaining,
+    get_brew_status,
+    start_brew,
+)
 from services.economy import get_or_create_user
 from services.patreon_service import PATREON_SHOP_URL, VIAL_BUNDLES, format_bundle_price
 from services.server_perks import resolve_perks
@@ -156,8 +163,8 @@ class LabCog(commands.Cog):
         if brew.ready_at <= now:
             status_text = "Ready to collect — run /lab collect."
         else:
-            minutes = int((brew.ready_at - now).total_seconds() // 60)
-            status_text = f"Still cooking, about {minutes} minutes left."
+            remaining = (brew.ready_at - now).total_seconds()
+            status_text = f"Still cooking, {format_brew_remaining(remaining)} left."
         view = StaticView(
             "Chem Lab",
             status_text,

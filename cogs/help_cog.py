@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 
+import config
 from db.base import async_session
 from services.economy import get_or_create_user
 from services.patreon_service import PATREON_PAGE_URL
@@ -43,18 +44,30 @@ OVERVIEW_BODY = (
 FOOTER_LINES = [
     "`/patreon subscribe` — both tiers in full. `/patreon link` connects a pledge you already have.",
     "`/patreon perks` — what's live for you · `/invite` — post the install link into a channel.",
-    # Sits beside `/patreon perks` because they're the two halves of the same question and
-    # the difference between them is not guessable from the names: one reads your pledge,
-    # this one reads your roles in the community server. Named here rather than given a
-    # topic page for the same reason Patreon isn't one — it's a status readout, not
-    # gameplay reference, and there's nothing to learn from it in advance.
-    #
-    # `choose` is named too, and not because check_help demands every subcommand be
-    # documented — it's the only thing on that whole track a player *decides*, and it is
-    # invisible from `/perks status` alone unless they already hold both level roles.
-    "`/perks status` — the free ones, from boosting and levelling up in the community server.",
-    "`/perks choose` — at level 10, which half of the shared perk slot you want live.",
 ]
+
+# Sits beside `/patreon perks` because they're the two halves of the same question and
+# the difference between them is not guessable from the names: one reads your pledge,
+# this one reads your roles in the community server. Named here rather than given a
+# topic page for the same reason Patreon isn't one — it's a status readout, not
+# gameplay reference, and there's nothing to learn from it in advance.
+#
+# `choose` is named too, and not because check_help demands every subcommand be
+# documented — it's the only thing on that whole track a player *decides*, and it is
+# invisible from `/perks status` alone unless they already hold both level roles.
+#
+# Appended conditionally, on the same flag bot.py's CONDITIONAL_EXTENSIONS uses to decide
+# whether to load cogs/perks_cog.py at all. The two reads have to agree: with PERKS_GUILD_ID
+# unset the cog never registers, and a footer that still named `/perks status` would be
+# pointing players at a command Discord has never heard of — a worse failure than the perks
+# being undiscoverable, because it looks like the bot is broken rather than quiet. Written as
+# an extend rather than a conditional expression inside the list so the lines above stay
+# diffable, and so this comment sits with the reason instead of above the whole block.
+if config.PERKS_GUILD_ID is not None:
+    FOOTER_LINES.extend([
+        "`/perks status` — the free ones, from boosting and levelling up in the community server.",
+        "`/perks choose` — at level 10, which half of the shared perk slot you want live.",
+    ])
 
 TOPICS = [
     {
